@@ -23,7 +23,7 @@
   "scripts": {
     "build": "bun build src/index.ts src/provider.ts --outdir dist --target bun --format esm --external @ai-sdk/provider --external @opencode-ai/plugin && tsgo --emitDeclarationOnly -p tsconfig.json",
     "typecheck": "tsgo --noEmit -p tsconfig.json",
-    "test": "bun test test/**/*.test.ts"
+    "test": "bun test src/**/*.test.ts"
   },
   "keywords": [
     "opencode",
