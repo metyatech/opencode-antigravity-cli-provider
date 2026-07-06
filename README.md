@@ -19,19 +19,24 @@ bun install
 bun run build
 ```
 
-Then add the built plugin to your OpenCode config from a local path:
+Then add the built plugin to your OpenCode config from a local path. The plugin
+auto-registers the `antigravity-cli` provider so it shows up under `/models`
+(for example `antigravity-cli/default`) without you having to add it under
+`provider["antigravity-cli"]` yourself:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     "file:///path/to/opencode-antigravity-cli-provider/dist/index.js"
-  ],
-  "model": "antigravity-cli/default"
+  ]
 }
 ```
 
-The plugin injects this provider only if `provider["antigravity-cli"]` is absent:
+The plugin auto-injects the `antigravity-cli` provider only if
+`provider["antigravity-cli"]` is absent, and it does NOT change your top-level
+default `model`. Pick your own default explicitly if you want Antigravity as
+the default (see the example below):
 
 ```jsonc
 {
@@ -53,10 +58,27 @@ The plugin injects this provider only if `provider["antigravity-cli"]` is absent
         }
       }
     }
-  },
-  "model": "antigravity-cli/default"
+  }
 }
 ```
+
+To make Antigravity your default model, opt in explicitly via the plugin
+option `model` while leaving your top-level `config.model` unset:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    [
+      "file:///path/to/opencode-antigravity-cli-provider/dist/index.js",
+      { "model": "antigravity-cli/default" }
+    ]
+  ]
+}
+```
+
+An existing top-level `model` is always preserved; the plugin never overwrites
+it.
 
 Disable plugin injection with plugin options:
 
@@ -116,7 +138,7 @@ Provider options:
 - `timeoutMs`: subprocess timeout. Defaults to `1800000` and must be between `1000` and `7200000`.
 - `modelMap`: OpenCode model ID to exact `agy --model` value. `null` means omit `--model`.
 - `extraArgs`: extra CLI arguments passed before `--model` and `-p`.
-- `model`: default OpenCode model string injected when `config.model` is absent.
+- `model`: optional top-level default model string. Only set when the user passes a non-empty string (after `trim()`) AND `config.model` is currently unset. The plugin never overwrites an existing top-level `config.model`.
 - `models`: OpenCode model metadata injected under `provider["antigravity-cli"].models`.
 
 ## Limitations
