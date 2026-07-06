@@ -1,0 +1,55 @@
+{
+  "name": "opencode-antigravity-cli-provider",
+  "version": "0.1.0",
+  "description": "OpenCode plugin and AI SDK custom provider for the official Antigravity agy CLI.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./provider": {
+      "types": "./dist/provider.d.ts",
+      "import": "./dist/provider.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bun build src/index.ts src/provider.ts --outdir dist --target bun --format esm --external @ai-sdk/provider --external @opencode-ai/plugin && tsgo --emitDeclarationOnly -p tsconfig.json",
+    "typecheck": "tsgo --noEmit -p tsconfig.json",
+    "test": "bun test test/**/*.test.ts"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "ai-sdk",
+    "provider",
+    "antigravity",
+    "agy"
+  ],
+  "author": "metyatech",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/metyatech/opencode-antigravity-cli-provider.git"
+  },
+  "bugs": {
+    "url": "https://github.com/metyatech/opencode-antigravity-cli-provider/issues"
+  },
+  "homepage": "https://github.com/metyatech/opencode-antigravity-cli-provider#readme",
+  "dependencies": {
+    "@ai-sdk/provider": "3.0.10",
+    "@opencode-ai/plugin": "^1.15.4"
+  },
+  "devDependencies": {
+    "@typescript/native-preview": "7.0.0-dev.20260518.1",
+    "bun-types": "1.3.14",
+    "typescript": "^6.0.3"
+  }
+}
