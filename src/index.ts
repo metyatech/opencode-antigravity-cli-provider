@@ -21,8 +21,6 @@ type MutableOpenCodeConfig = Config & {
 
 const providerId = "antigravity-cli"
 
-const defaultModel = "antigravity-cli/default"
-
 const defaultModels = {
   default: {
     name: "Antigravity CLI Default",
@@ -58,7 +56,14 @@ const pluginModule: PluginModule = {
         }
 
         config.provider[providerId] = createProviderConfig(pluginOptions)
-        config.model ??= pluginOptions.model ?? defaultModel
+
+        if (config.model === undefined) {
+          const requestedModel =
+            typeof pluginOptions.model === "string" ? pluginOptions.model.trim() : ""
+          if (requestedModel.length > 0) {
+            config.model = requestedModel
+          }
+        }
       },
     }
   },
