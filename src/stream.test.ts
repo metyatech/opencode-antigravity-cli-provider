@@ -56,7 +56,9 @@ describe("createAgyTextStream", () => {
       })
     })
 
-    const parts = await collectStream(createAgyTextStream({ modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000 } }, { spawn: fake.spawn }))
+    const parts = await collectStream(
+      createAgyTextStream({ modelId: "gemini", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } } }, { spawn: fake.spawn }),
+    )
 
     expect(parts.map((part) => part.type)).toEqual(["stream-start", "text-start", "text-delta", "text-delta", "text-end", "finish"])
     expect(parts.filter((part) => part.type === "text-delta").map((part) => part.delta)).toEqual(["hello ", "world"])
@@ -69,14 +71,16 @@ describe("createAgyTextStream", () => {
       queueMicrotask(() => child.stderr.write("Permission required before use"))
     })
 
-    await expect(collectStream(createAgyTextStream({ modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000 } }, { spawn: fake.spawn }))).rejects.toThrow(
+    await expect(
+      collectStream(createAgyTextStream({ modelId: "gemini", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } } }, { spawn: fake.spawn })),
+    ).rejects.toThrow(
       "Run `agy` directly to complete setup",
     )
   })
 
   test("kills the child when the stream reader cancels", async () => {
     const fake = createFakeSpawn()
-    const stream = createAgyTextStream({ modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000 } }, { spawn: fake.spawn })
+    const stream = createAgyTextStream({ modelId: "gemini", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } } }, { spawn: fake.spawn })
     const reader = stream.getReader()
 
     await reader.read()

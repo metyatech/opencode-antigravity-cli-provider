@@ -9,7 +9,7 @@ describe("normalizeOptions", () => {
 
     expect(options.command).toBe("agy")
     expect(options.timeoutMs).toBe(1_800_000)
-    expect(options.modelMap).toEqual({ default: null })
+    expect(options.modelMap).toEqual({})
     expect(options.extraArgs).toEqual([])
     expect(options.env).toEqual({})
   })
@@ -34,29 +34,31 @@ describe("normalizeOptions", () => {
       expect(() => normalizeOptions({ extraArgs: [arg] })).toThrow("Configure authentication by running agy directly")
     }
   })
+
+  test("rejects non-string and empty model mappings", () => {
+    expect(() => normalizeOptions({ modelMap: { empty: " " } })).toThrow("Model mappings must be non-empty strings")
+    const invalid = { modelMap: { broken: null } } as unknown as AntigravityCliProviderOptions
+    expect(() => normalizeOptions(invalid)).toThrow("Model mappings must be non-empty strings")
+  })
 })
 
 describe("resolveAgyModel", () => {
-  test("omits --model for the OpenCode default model", () => {
-    expect(resolveAgyModel("default", { default: "ignored" })).toBeNull()
-  })
-
-  test("omits --model for explicit null mappings", () => {
-    expect(resolveAgyModel("cli-default", { "cli-default": null })).toBeNull()
-  })
-
   test("returns exact configured agy model names", () => {
     expect(resolveAgyModel("workspace-pro", { "workspace-pro": "exact-agy-model" })).toBe("exact-agy-model")
   })
 
   test("throws before launch when a model mapping is missing", () => {
-    expect(() => resolveAgyModel("missing", { default: null })).toThrow("No Antigravity CLI model mapping configured")
+    expect(() => resolveAgyModel("missing", {})).toThrow("No Antigravity CLI model mapping configured")
+  })
+
+  test("rejects invalid mappings before launch", () => {
+    const invalid = { broken: null } as unknown as Record<string, string>
+    expect(() => resolveAgyModel("broken", invalid)).toThrow("Model mappings must be non-empty strings")
   })
 })
 
 describe("buildAgyArgs", () => {
-  test("keeps the required argument order", () => {
+  test("always includes the exact model name before the prompt", () => {
     expect(buildAgyArgs(["--verbose"], "exact-agy-model", "hello")).toEqual(["--verbose", "--model", "exact-agy-model", "-p", "hello"])
-    expect(buildAgyArgs(["--verbose"], null, "hello")).toEqual(["--verbose", "-p", "hello"])
   })
 })

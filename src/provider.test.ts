@@ -46,8 +46,8 @@ const collectStream = async (stream: ReadableStream<LanguageModelV3StreamPart>) 
 
 describe("createAntigravityCliProvider", () => {
   test("creates local AI SDK V3 language models", () => {
-    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000 })
-    const model = provider.languageModel("default")
+    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } })
+    const model = provider.languageModel("gemini")
 
     expect(provider.specificationVersion).toBe("v3")
     expect(model.specificationVersion).toBe("v3")
@@ -62,8 +62,8 @@ describe("createAntigravityCliProvider", () => {
         child.close(0)
       })
     })
-    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000 }, { spawn: fake.spawn })
-    const result = await provider.languageModel("default").doGenerate({ prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }] })
+    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } }, { spawn: fake.spawn })
+    const result = await provider.languageModel("gemini").doGenerate({ prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }] })
 
     expect(result.content).toEqual([{ type: "text", text: "provider text" }])
     expect(result.usage.inputTokens.total).toBeUndefined()
@@ -79,8 +79,8 @@ describe("createAntigravityCliProvider", () => {
         child.close(0)
       })
     })
-    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000 }, { spawn: fake.spawn })
-    const result = await provider.languageModel("default").doStream({ prompt: [{ role: "user", content: "hello" }] })
+    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } }, { spawn: fake.spawn })
+    const result = await provider.languageModel("gemini").doStream({ prompt: [{ role: "user", content: "hello" }] })
     const parts = await collectStream(result.stream)
 
     expect(parts).toContainEqual({ type: "text-delta", id: "antigravity-cli-text", delta: "streamed" })
@@ -88,14 +88,14 @@ describe("createAntigravityCliProvider", () => {
 
   test("unknown mapped models fail before command launch", async () => {
     const fake = createFakeSpawn()
-    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000, modelMap: { default: null } }, { spawn: fake.spawn })
+    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000, modelMap: {} }, { spawn: fake.spawn })
 
     await expect(provider.languageModel("missing").doGenerate({ prompt: [{ role: "user", content: "hello" }] })).rejects.toThrow("No Antigravity CLI model mapping configured")
     expect(fake.calls).toHaveLength(0)
   })
 
   test("non-language models are explicitly unsupported", () => {
-    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000 })
+    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } })
 
     expect(() => provider.embeddingModel("default")).toThrow("does not support embedding model")
     expect(() => provider.imageModel("default")).toThrow("does not support image model")
@@ -116,10 +116,10 @@ describe("createAntigravityCliProvider", () => {
     const mod = await import("./provider")
     const firstCreateKey = Object.keys(mod).find((key) => key.startsWith("create"))!
     const createFn = mod[firstCreateKey as keyof typeof mod] as (options: object) => LoaderSimulationResult
-    const provider = createFn({ command: "fake-agy", timeoutMs: 1_000 })
+    const provider = createFn({ command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } })
 
     expect(provider.specificationVersion).toBe("v3")
     expect(typeof provider.languageModel).toBe("function")
-    expect(provider.languageModel("default").provider).toBe("antigravity-cli")
+    expect(provider.languageModel("gemini").provider).toBe("antigravity-cli")
   })
 })

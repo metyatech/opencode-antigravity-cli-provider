@@ -64,7 +64,7 @@ describe("runAgyCommand", () => {
       {
         modelId: "default",
         prompt: "hello",
-        options: { command: "fake-agy", timeoutMs: 1_000, env: { AGY_TEST_ENV: "1" }, cwd: "." },
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { default: "Gemini 3.5 Flash (Medium)" }, env: { AGY_TEST_ENV: "1" }, cwd: "." },
       },
       { spawn: fake.spawn },
     )
@@ -80,14 +80,7 @@ describe("runAgyCommand", () => {
     const fake = createFakeSpawn()
 
     expect(() =>
-      runAgyCommand(
-        {
-          modelId: "unknown",
-          prompt: "hello",
-          options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { default: null } },
-        },
-        { spawn: fake.spawn },
-      ),
+      runAgyCommand({ modelId: "unknown", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: {} } }, { spawn: fake.spawn }),
     ).toThrow("No Antigravity CLI model mapping configured")
     expect(fake.calls).toHaveLength(0)
   })
@@ -100,7 +93,9 @@ describe("runAgyCommand", () => {
       })
     })
 
-    await expect(runAgyCommand({ modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000 } }, { spawn: fake.spawn })).rejects.toThrow(
+    await expect(
+      runAgyCommand({ modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { default: "Gemini" } } }, { spawn: fake.spawn }),
+    ).rejects.toThrow(
       "Antigravity CLI failed with exit code 2. boom",
     )
   })
@@ -108,7 +103,9 @@ describe("runAgyCommand", () => {
   test("rejects empty stdout and stderr with the required no-output message", async () => {
     const fake = createFakeSpawn((child) => queueMicrotask(() => child.close(0)))
 
-    await expect(runAgyCommand({ modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000 } }, { spawn: fake.spawn })).rejects.toThrow(
+    await expect(
+      runAgyCommand({ modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { default: "Gemini" } } }, { spawn: fake.spawn }),
+    ).rejects.toThrow(
       "Antigravity CLI returned no output.",
     )
   })
@@ -118,7 +115,9 @@ describe("runAgyCommand", () => {
       queueMicrotask(() => child.stdout.write("Please login to continue"))
     })
 
-    await expect(runAgyCommand({ modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000 } }, { spawn: fake.spawn })).rejects.toThrow(
+    await expect(
+      runAgyCommand({ modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { default: "Gemini" } } }, { spawn: fake.spawn }),
+    ).rejects.toThrow(
       "Run `agy` directly to complete setup",
     )
     expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
@@ -127,7 +126,7 @@ describe("runAgyCommand", () => {
   test("kills the child and reports the exact timeout message", async () => {
     const fake = createFakeSpawn()
     const run = runAgyCommand(
-      { modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000 } },
+      { modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { default: "Gemini" } } },
       {
         spawn: fake.spawn,
         setTimeout: (handler) => {
@@ -145,7 +144,10 @@ describe("runAgyCommand", () => {
   test("kills the child and raises AbortError on abort", async () => {
     const fake = createFakeSpawn()
     const abortController = new AbortController()
-    const run = runAgyCommand({ modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000 }, abortSignal: abortController.signal }, { spawn: fake.spawn })
+    const run = runAgyCommand(
+      { modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { default: "Gemini" } }, abortSignal: abortController.signal },
+      { spawn: fake.spawn },
+    )
 
     abortController.abort()
 

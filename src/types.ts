@@ -1,7 +1,7 @@
 export type AntigravityCliProviderOptions = {
   command?: string
   timeoutMs?: number
-  modelMap?: Record<string, string | null>
+  modelMap?: Record<string, string>
   extraArgs?: string[]
   cwd?: string
   env?: Record<string, string>
@@ -10,7 +10,7 @@ export type AntigravityCliProviderOptions = {
 export type ResolvedAntigravityCliProviderOptions = {
   command: string
   timeoutMs: number
-  modelMap: Record<string, string | null>
+  modelMap: Record<string, string>
   extraArgs: string[]
   cwd: string
   env: Record<string, string>
@@ -20,7 +20,7 @@ export type AgyCommandInvocation = {
   command: string
   args: string[]
   options: ResolvedAntigravityCliProviderOptions
-  agyModel: string | null
+  agyModel: string
 }
 
 export type AgyCommandResult = {

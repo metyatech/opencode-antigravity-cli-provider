@@ -2,7 +2,7 @@
 
 ## Overview
 
-`opencode-antigravity-cli-provider` is a standalone OpenCode plugin and AI SDK custom provider for the official Antigravity `agy` CLI. It registers an OpenCode provider named `antigravity-cli` and delegates generation to `agy -p <prompt>` through a subprocess bridge.
+`opencode-antigravity-cli-provider` is a standalone OpenCode plugin and AI SDK custom provider for the official Antigravity `agy` CLI. It registers an OpenCode provider named `antigravity-cli` and delegates generation to `agy --model <exact display name> -p <prompt>` through a subprocess bridge.
 
 This repository is intentionally narrow: it packages the provider as local plugin source for OpenCode and preserves the existing text-only `agy` CLI behavior. It does not implement an Antigravity backend client.
 
@@ -33,10 +33,32 @@ auto-registers the `antigravity-cli` provider so it shows up under `/models`
 }
 ```
 
-The plugin auto-injects the `antigravity-cli` provider only if
-`provider["antigravity-cli"]` is absent, and it does NOT change your top-level
-default `model`. Pick your own default explicitly if you want Antigravity as
-the default (see the example below):
+On startup, the plugin runs the official read-only `agy models` command and
+builds OpenCode model IDs from the displayed model names. It auto-injects the
+`antigravity-cli` provider only if `provider["antigravity-cli"]` is absent and
+discovery returns at least one model. It does NOT change your top-level default
+`model` unless you explicitly pass the plugin `model` option with a discovered
+slug.
+
+For example, this `agy models` output:
+
+```text
+Gemini 3.5 Flash (Medium)
+Claude Sonnet 4.6 (Thinking)
+```
+
+creates OpenCode model IDs:
+
+```text
+antigravity-cli/gemini-3-5-flash-medium
+antigravity-cli/claude-sonnet-4-6-thinking
+```
+
+Those slug IDs are only OpenCode IDs. The provider passes the exact display
+names back to `agy --model`, such as `Gemini 3.5 Flash (Medium)`. There is no
+default model and no alias mapping.
+
+The generated provider config has this shape:
 
 ```jsonc
 {
@@ -48,13 +70,13 @@ the default (see the example below):
         "command": "agy",
         "timeoutMs": 1800000,
         "modelMap": {
-          "default": null
+          "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)"
         },
         "extraArgs": []
       },
       "models": {
-        "default": {
-          "name": "Antigravity CLI Default"
+        "gemini-3-5-flash-medium": {
+          "name": "Gemini 3.5 Flash (Medium)"
         }
       }
     }
@@ -62,8 +84,12 @@ the default (see the example below):
 }
 ```
 
-To make Antigravity your default model, opt in explicitly via the plugin
-option `model` while leaving your top-level `config.model` unset:
+If discovery fails or returns zero models, the plugin warns and skips provider
+injection. It does not fall back to a hard-coded model.
+
+To make Antigravity your OpenCode default model, opt in explicitly via the
+plugin option `model` using one discovered slug while leaving your top-level
+`config.model` unset:
 
 ```jsonc
 {
@@ -71,14 +97,15 @@ option `model` while leaving your top-level `config.model` unset:
   "plugin": [
     [
       "file:///path/to/opencode-antigravity-cli-provider/dist/index.js",
-      { "model": "antigravity-cli/default" }
+      { "model": "gemini-3-5-flash-medium" }
     ]
   ]
 }
 ```
 
 An existing top-level `model` is always preserved; the plugin never overwrites
-it.
+it. If the requested slug is not in the current discovery result, the plugin
+warns and leaves `config.model` unchanged.
 
 Disable plugin injection with plugin options:
 
@@ -104,7 +131,21 @@ Disable plugin injection with plugin options:
 
 ## Models and options
 
-`default` deliberately omits `--model`. Additional OpenCode model IDs must be explicitly mapped to exact `agy --model` values:
+Models are discovered from `agy models` automatically. The plugin does not
+support manual `models`, manual `modelMap`, aliases, a default/fallback model,
+or a doctor command. If `agy models --json` is unsupported by your installed
+CLI, that is expected; this plugin uses the plain-text `agy models` output.
+
+Provider options:
+
+- `enabled`: set to `false` to skip config injection.
+- `command`: CLI command to spawn. Defaults to `agy`.
+- `timeoutMs`: generation subprocess timeout. Defaults to `1800000` and must be between `1000` and `7200000`.
+- `discoveryTimeoutMs`: `agy models` discovery timeout. Defaults to `10000`.
+- `extraArgs`: extra CLI arguments passed before `--model` and `-p` for generation only.
+- `model`: optional discovered slug to set as the top-level OpenCode default as `antigravity-cli/<slug>`. The plugin only sets it when `config.model` is currently unset and the slug exists in the discovery result.
+
+Example with supported options:
 
 ```jsonc
 {
@@ -114,32 +155,14 @@ Disable plugin injection with plugin options:
       {
         "command": "agy",
         "timeoutMs": 1800000,
-        "modelMap": {
-          "default": null,
-          "workspace-pro": "Workspace Pro"
-        },
+        "discoveryTimeoutMs": 10000,
         "extraArgs": [],
-        "model": "antigravity-cli/workspace-pro",
-        "models": {
-          "workspace-pro": {
-            "name": "Workspace Pro"
-          }
-        }
+        "model": "gemini-3-5-flash-medium"
       }
     ]
   ]
 }
 ```
-
-Provider options:
-
-- `enabled`: set to `false` to skip config injection.
-- `command`: CLI command to spawn. Defaults to `agy`.
-- `timeoutMs`: subprocess timeout. Defaults to `1800000` and must be between `1000` and `7200000`.
-- `modelMap`: OpenCode model ID to exact `agy --model` value. `null` means omit `--model`.
-- `extraArgs`: extra CLI arguments passed before `--model` and `-p`.
-- `model`: optional top-level default model string. Only set when the user passes a non-empty string (after `trim()`) AND `config.model` is currently unset. The plugin never overwrites an existing top-level `config.model`.
-- `models`: OpenCode model metadata injected under `provider["antigravity-cli"].models`.
 
 ## Limitations
 
@@ -148,11 +171,11 @@ Provider options:
 - No cache control, conversation resume, or shared `agy` conversation state.
 - Streaming approximates stdout chunks as text deltas.
 - stderr is diagnostic-only and is never returned as generated text.
-- Each request is a fresh `agy -p` subprocess invocation.
+- Each request is a fresh `agy --model <exact display name> -p` subprocess invocation.
 
 ## Safety model
 
-This project only bridges to the official `agy` CLI. It does not introduce OAuth, internal Antigravity APIs, sidecars, proxies, local OpenAI-compatible servers, account rotation, quota bypasses, credential managers, token fetchers, or direct calls to Google or Antigravity backend services.
+This project only bridges to the official `agy` CLI. It does not introduce OAuth, keyring inspection, internal Antigravity APIs, sidecars, proxies, local OpenAI-compatible servers, account rotation, quota bypasses, credential managers, token fetchers, direct Google/Antigravity backend fetches, aliases, or a doctor command.
 
 The provider also rejects dangerous authentication or account-routing arguments in `extraArgs`: `--api-key`, `--token`, `--auth`, `--credential`, `--credentials`, `--project`, `--account`, `--login`, and `--logout`. Subprocesses are spawned with `shell: false`; this repository does not use `child_process.exec`.
 
