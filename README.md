@@ -25,7 +25,7 @@ Then add the built plugin to your OpenCode config from the local vendor path. Th
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "./vendor/opencode-antigravity-cli-provider/dist/index.js"
+    "./vendor/opencode-antigravity-cli-provider"
   ]
 }
 ```
@@ -100,8 +100,8 @@ the default for new sessions:
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     [
-      "./vendor/opencode-antigravity-cli-provider/dist/index.js",
-      { "model": "claude-opus-4-6-thinking" }
+      "./vendor/opencode-antigravity-cli-provider",
+      { "model": "antigravity-cli/claude-opus-4-6-thinking" }
     ]
   ]
 }
@@ -117,7 +117,7 @@ Disable plugin injection with plugin options:
 {
   "plugin": [
     [
-      "./vendor/opencode-antigravity-cli-provider/dist/index.js",
+      "./vendor/opencode-antigravity-cli-provider",
       {
         "enabled": false
       }
@@ -130,7 +130,7 @@ Disable plugin injection with plugin options:
 
 1. `agy` is installed and available in `PATH`.
 2. `agy` has been run interactively to complete login, terms acceptance, theme setup, and workspace trust.
-3. OpenCode can load local plugin files from the built `dist/index.js` path.
+3. OpenCode can load the local vendor plugin path after this repository is built.
 4. Bun is available for local development commands.
 
 ## Models and options
@@ -147,7 +147,7 @@ Provider options:
 - `timeoutMs`: generation subprocess timeout. Defaults to `1800000` and must be between `1000` and `7200000`.
 - `discoveryTimeoutMs`: `agy models` discovery timeout. Defaults to `10000`.
 - `extraArgs`: extra CLI arguments passed before `--model` and `-p` for generation only.
-- `model`: optional discovered slug to set as the top-level OpenCode default as `antigravity-cli/<slug>`. The plugin only sets it when `config.model` is currently unset and the slug exists in the discovery result.
+- `model`: optional discovered model ID such as `antigravity-cli/<slug>` to set as the top-level OpenCode default. The plugin only sets it when `config.model` is currently unset and the slug exists in the discovery result.
 
 Example with supported options:
 
@@ -155,13 +155,13 @@ Example with supported options:
 {
   "plugin": [
     [
-      "./vendor/opencode-antigravity-cli-provider/dist/index.js",
+      "./vendor/opencode-antigravity-cli-provider",
       {
         "command": "agy",
         "timeoutMs": 1800000,
         "discoveryTimeoutMs": 10000,
         "extraArgs": [],
-        "model": "claude-opus-4-6-thinking"
+        "model": "antigravity-cli/claude-opus-4-6-thinking"
       }
     ]
   ]

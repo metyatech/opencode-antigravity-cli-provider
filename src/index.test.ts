@@ -11,16 +11,16 @@ type MutableConfig = {
 
 const defaultDiscovery: AgyModelDiscoveryResult = {
   discovered: [
-    { id: "gemini-3-5-flash-medium", name: "Gemini 3.5 Flash (Medium)" },
-    { id: "claude-sonnet-4-6-thinking", name: "Claude Sonnet 4.6 (Thinking)" },
+    { id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 Thinking", agyModel: "Claude Opus 4.6 Thinking" },
+    { id: "gemini-3-1-pro-preview", name: "Gemini 3.1 Pro Preview", agyModel: "Gemini 3.1 Pro Preview" },
   ],
   models: {
-    "gemini-3-5-flash-medium": { name: "Gemini 3.5 Flash (Medium)" },
-    "claude-sonnet-4-6-thinking": { name: "Claude Sonnet 4.6 (Thinking)" },
+    "claude-opus-4-6-thinking": { name: "Claude Opus 4.6 Thinking" },
+    "gemini-3-1-pro-preview": { name: "Gemini 3.1 Pro Preview" },
   },
   modelMap: {
-    "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)",
-    "claude-sonnet-4-6-thinking": "Claude Sonnet 4.6 (Thinking)",
+    "claude-opus-4-6-thinking": "Claude Opus 4.6 Thinking",
+    "gemini-3-1-pro-preview": "Gemini 3.1 Pro Preview",
   },
 }
 
@@ -81,17 +81,26 @@ describe("OpenCode plugin entrypoint", () => {
     expect(discoverCalls).toEqual([{ command: "agy", timeoutMs: undefined }])
   })
 
-  test("sets top-level model from explicit discovered slug when config.model is absent", async () => {
-    const hooks = await createServerHooks({ model: "gemini-3-5-flash-medium" })
+  test("sets top-level model from explicit prefixed discovered model when config.model is absent", async () => {
+    const hooks = await createServerHooks({ model: "antigravity-cli/claude-opus-4-6-thinking" })
     const config = createConfig()
 
     await hooks.config?.(config as Parameters<NonNullable<typeof hooks.config>>[0])
 
-    expect(config.model).toBe("antigravity-cli/gemini-3-5-flash-medium")
+    expect(config.model).toBe("antigravity-cli/claude-opus-4-6-thinking")
     expect(config.provider?.["antigravity-cli"]).toMatchObject({
       name: "Antigravity CLI",
       options: { command: "agy" },
     })
+  })
+
+  test("sets top-level model from explicit discovered slug without provider prefix", async () => {
+    const hooks = await createServerHooks({ model: "claude-opus-4-6-thinking" })
+    const config = createConfig()
+
+    await hooks.config?.(config as Parameters<NonNullable<typeof hooks.config>>[0])
+
+    expect(config.model).toBe("antigravity-cli/claude-opus-4-6-thinking")
   })
 
   test("warns and leaves top-level model unset for a requested slug that was not discovered", async () => {
@@ -126,7 +135,7 @@ describe("OpenCode plugin entrypoint", () => {
   })
 
   test("preserves an existing top-level model and provider without discovery", async () => {
-    const hooks = await createServerHooks({ model: "gemini-3-5-flash-medium" })
+    const hooks = await createServerHooks({ model: "claude-opus-4-6-thinking" })
     const config = createConfig({
       provider: {
         "antigravity-cli": {
@@ -172,7 +181,7 @@ describe("OpenCode plugin entrypoint", () => {
   })
 
   test("respects enabled false even when plugin options request a model", async () => {
-    const hooks = await createServerHooks({ enabled: false, model: "gemini-3-5-flash-medium" })
+    const hooks = await createServerHooks({ enabled: false, model: "claude-opus-4-6-thinking" })
     const config = createConfig()
 
     await hooks.config?.(config as Parameters<NonNullable<typeof hooks.config>>[0])
@@ -216,7 +225,7 @@ describe("OpenCode plugin entrypoint", () => {
 
     await hooks.config?.(config as Parameters<NonNullable<typeof hooks.config>>[0])
 
-    expect(config).toEqual({ provider: {} })
+    expect(config).toEqual({})
     expect(warnings[0]).toContain("discovery boom")
   })
 
@@ -227,7 +236,7 @@ describe("OpenCode plugin entrypoint", () => {
 
     await hooks.config?.(config as Parameters<NonNullable<typeof hooks.config>>[0])
 
-    expect(config).toEqual({ provider: {} })
+    expect(config).toEqual({})
     expect(warnings[0]).toContain("returned no models")
   })
 })

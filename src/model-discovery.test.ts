@@ -64,25 +64,31 @@ describe("buildAgyModelDiscoveryResult", () => {
   test("excludes entries with empty slugs", () => {
     const result = buildAgyModelDiscoveryResult(["!!!", "Gemini"])
 
-    expect(result.discovered).toEqual([{ id: "gemini", name: "Gemini" }])
+    expect(result.discovered).toEqual([{ id: "gemini", name: "Gemini", agyModel: "Gemini" }])
     expect(result.models).toEqual({ gemini: { name: "Gemini" } })
   })
 })
 
 describe("parseAgyModelListOutput", () => {
   test("parses the real agy models stdout fixture conservatively", () => {
-    const result = parseAgyModelListOutput(actualAgyModelsOutput)
+    const parsed = parseAgyModelListOutput(actualAgyModelsOutput)
+    const result = buildAgyModelDiscoveryResult(parsed)
 
-    expect(result.discovered).toEqual([
-      { id: "gemini-3-5-flash-medium", name: "Gemini 3.5 Flash (Medium)" },
-      { id: "gemini-3-5-flash-high", name: "Gemini 3.5 Flash (High)" },
-      { id: "gemini-3-5-flash-low", name: "Gemini 3.5 Flash (Low)" },
-      { id: "gemini-3-1-pro-low", name: "Gemini 3.1 Pro (Low)" },
-      { id: "gemini-3-1-pro-high", name: "Gemini 3.1 Pro (High)" },
-      { id: "claude-sonnet-4-6-thinking", name: "Claude Sonnet 4.6 (Thinking)" },
-      { id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)" },
-      { id: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+    expect(parsed).toEqual([
+      "Gemini 3.5 Flash (Medium)",
+      "Gemini 3.5 Flash (High)",
+      "Gemini 3.5 Flash (Low)",
+      "Gemini 3.1 Pro (Low)",
+      "Gemini 3.1 Pro (High)",
+      "Claude Sonnet 4.6 (Thinking)",
+      "Claude Opus 4.6 (Thinking)",
+      "GPT-OSS 120B (Medium)",
     ])
+    expect(result.discovered[0]).toEqual({
+      id: "gemini-3-5-flash-medium",
+      name: "Gemini 3.5 Flash (Medium)",
+      agyModel: "Gemini 3.5 Flash (Medium)",
+    })
     expect(result.modelMap["gemini-3-5-flash-medium"]).toBe("Gemini 3.5 Flash (Medium)")
   })
 
@@ -98,7 +104,7 @@ Models:
 [exit=0]
 `)
 
-    expect(result.discovered.map((model) => model.name)).toEqual(["Gemini 3.5 Flash (Medium)", "Claude Sonnet 4.6 (Thinking)"])
+    expect(result).toEqual(["Gemini 3.5 Flash (Medium)", "Claude Sonnet 4.6 (Thinking)"])
   })
 })
 

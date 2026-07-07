@@ -29,6 +29,12 @@ const providerId = "antigravity-cli"
 
 const defaultWarn = (message: string) => console.warn(`[opencode-antigravity-cli-provider] ${message}`)
 
+const normalizeRequestedModelId = (model: string) => {
+  const requested = model.trim()
+  const providerPrefix = `${providerId}/`
+  return requested.startsWith(providerPrefix) ? requested.slice(providerPrefix.length) : requested
+}
+
 const createProviderConfig = (options: AntigravityCliPluginOptions, discovery: AgyModelDiscoveryResult) => ({
   npm: new URL("./provider.js", import.meta.url).href,
   name: "Antigravity CLI",
@@ -54,8 +60,7 @@ export const createAntigravityCliPluginModule = (dependencies: AntigravityCliPlu
         }
 
         const config = input as MutableOpenCodeConfig
-        config.provider ??= {}
-        if (config.provider[providerId]) {
+        if (config.provider?.[providerId]) {
           return
         }
 
@@ -73,11 +78,11 @@ export const createAntigravityCliPluginModule = (dependencies: AntigravityCliPlu
           return
         }
 
+        config.provider ??= {}
         config.provider[providerId] = createProviderConfig(pluginOptions, discovery)
 
         if (config.model === undefined) {
-          const requestedModel =
-            typeof pluginOptions.model === "string" ? pluginOptions.model.trim() : ""
+          const requestedModel = typeof pluginOptions.model === "string" ? normalizeRequestedModelId(pluginOptions.model) : ""
           if (requestedModel.length > 0) {
             if (Object.prototype.hasOwnProperty.call(discovery.modelMap, requestedModel)) {
               config.model = `${providerId}/${requestedModel}`

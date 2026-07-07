@@ -12,6 +12,7 @@ import type { AgyClearTimeout, AgySetTimeout, AgySpawn } from "./types"
 export type DiscoveredAgyModel = {
   id: string
   name: string
+  agyModel: string
 }
 
 export type AgyModelDiscoveryResult = {
@@ -73,7 +74,7 @@ export const buildAgyModelDiscoveryResult = (names: string[]): AgyModelDiscovery
     const nextCount = (slugCounts.get(baseSlug) ?? 0) + 1
     slugCounts.set(baseSlug, nextCount)
     const id = nextCount === 1 ? baseSlug : `${baseSlug}-${nextCount}`
-    discovered.push({ id, name })
+    discovered.push({ id, name, agyModel: name })
     models[id] = { name }
     modelMap[id] = name
   }
@@ -81,10 +82,7 @@ export const buildAgyModelDiscoveryResult = (names: string[]): AgyModelDiscovery
   return { discovered, models, modelMap }
 }
 
-export const parseAgyModelListOutput = (output: string) => {
-  const names = output.split(/\r?\n/).map(stripListPrefix).filter((line) => !shouldIgnoreLine(line))
-  return buildAgyModelDiscoveryResult(names)
-}
+export const parseAgyModelListOutput = (output: string): string[] => output.split(/\r?\n/).map(stripListPrefix).filter((line) => !shouldIgnoreLine(line))
 
 export const discoverAgyModels = (options: DiscoverAgyModelsOptions = {}, dependencies: DiscoverAgyModelsDependencies = {}) => {
   const command = options.command ?? "agy"
@@ -165,7 +163,7 @@ export const discoverAgyModels = (options: DiscoverAgyModelsOptions = {}, depend
         return
       }
 
-      resolve(parseAgyModelListOutput(stdout))
+      resolve(buildAgyModelDiscoveryResult(parseAgyModelListOutput(stdout)))
     })
   })
 }
