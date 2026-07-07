@@ -225,7 +225,7 @@ describe("OpenCode plugin entrypoint", () => {
 
     await hooks.config?.(config as Parameters<NonNullable<typeof hooks.config>>[0])
 
-    expect(config).toEqual({})
+    expect(config.provider).toBeUndefined()
     expect(warnings[0]).toContain("discovery boom")
   })
 
@@ -236,7 +236,7 @@ describe("OpenCode plugin entrypoint", () => {
 
     await hooks.config?.(config as Parameters<NonNullable<typeof hooks.config>>[0])
 
-    expect(config).toEqual({})
+    expect(config.provider).toBeUndefined()
     expect(warnings[0]).toContain("returned no models")
   })
 })

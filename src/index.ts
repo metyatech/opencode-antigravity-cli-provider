@@ -78,7 +78,9 @@ export const createAntigravityCliPluginModule = (dependencies: AntigravityCliPlu
           return
         }
 
-        config.provider ??= {}
+        if (!config.provider) {
+          config.provider = {}
+        }
         config.provider[providerId] = createProviderConfig(pluginOptions, discovery)
 
         if (config.model === undefined) {
