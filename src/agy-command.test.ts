@@ -48,6 +48,24 @@ describe("buildAgyCommandInvocation", () => {
     expect(invocation.command).toBe("fake-agy")
     expect(invocation.args).toEqual(["--verbose", "--model", "exact-agy-model", "-p", "hello"])
   })
+
+  test("maps the discovered gemini-3-5-flash-medium slug to its exact agy display name", () => {
+    const invocation = buildAgyCommandInvocation({
+      modelId: "gemini-3-5-flash-medium",
+      prompt: "hello",
+      options: {
+        command: "fake-agy",
+        timeoutMs: 1_000,
+        modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+      },
+    })
+
+    expect(invocation.agyModel).toBe("Gemini 3.5 Flash (Medium)")
+    expect(invocation.args).toEqual(["--model", "Gemini 3.5 Flash (Medium)", "-p", "hello"])
+    expect(invocation.args).toContain("--model")
+    expect(invocation.args[invocation.args.indexOf("--model") + 1]).toBe("Gemini 3.5 Flash (Medium)")
+    expect(invocation.args).toContain("-p")
+  })
 })
 
 describe("runAgyCommand", () => {
@@ -62,9 +80,15 @@ describe("runAgyCommand", () => {
 
     const result = await runAgyCommand(
       {
-        modelId: "default",
+        modelId: "gemini-3-5-flash-medium",
         prompt: "hello",
-        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { default: "Gemini 3.5 Flash (Medium)" }, env: { AGY_TEST_ENV: "1" }, cwd: "." },
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+          env: { AGY_TEST_ENV: "1" },
+          cwd: ".",
+        },
       },
       { spawn: fake.spawn },
     )
@@ -73,6 +97,7 @@ describe("runAgyCommand", () => {
     expect(fake.calls).toHaveLength(1)
     expect(fake.calls[0].options.shell).toBe(false)
     expect(fake.calls[0].options.env.AGY_TEST_ENV).toBe("1")
+    expect(fake.calls[0].args).toEqual(["--model", "Gemini 3.5 Flash (Medium)", "-p", "hello"])
     expect(fake.calls[0].args.at(-2)).toBe("-p")
   })
 
@@ -94,20 +119,38 @@ describe("runAgyCommand", () => {
     })
 
     await expect(
-      runAgyCommand({ modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { default: "Gemini" } } }, { spawn: fake.spawn }),
-    ).rejects.toThrow(
-      "Antigravity CLI failed with exit code 2. boom",
-    )
+      runAgyCommand(
+        {
+          modelId: "gemini-3-5-flash-medium",
+          prompt: "hello",
+          options: {
+            command: "fake-agy",
+            timeoutMs: 1_000,
+            modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+          },
+        },
+        { spawn: fake.spawn },
+      ),
+    ).rejects.toThrow("Antigravity CLI failed with exit code 2. boom")
   })
 
   test("rejects empty stdout and stderr with the required no-output message", async () => {
     const fake = createFakeSpawn((child) => queueMicrotask(() => child.close(0)))
 
     await expect(
-      runAgyCommand({ modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { default: "Gemini" } } }, { spawn: fake.spawn }),
-    ).rejects.toThrow(
-      "Antigravity CLI returned no output.",
-    )
+      runAgyCommand(
+        {
+          modelId: "gemini-3-5-flash-medium",
+          prompt: "hello",
+          options: {
+            command: "fake-agy",
+            timeoutMs: 1_000,
+            modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+          },
+        },
+        { spawn: fake.spawn },
+      ),
+    ).rejects.toThrow("Antigravity CLI returned no output.")
   })
 
   test("fails fast on interactive prompts and kills the child", async () => {
@@ -116,17 +159,34 @@ describe("runAgyCommand", () => {
     })
 
     await expect(
-      runAgyCommand({ modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { default: "Gemini" } } }, { spawn: fake.spawn }),
-    ).rejects.toThrow(
-      "Run `agy` directly to complete setup",
-    )
+      runAgyCommand(
+        {
+          modelId: "gemini-3-5-flash-medium",
+          prompt: "hello",
+          options: {
+            command: "fake-agy",
+            timeoutMs: 1_000,
+            modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+          },
+        },
+        { spawn: fake.spawn },
+      ),
+    ).rejects.toThrow("Run `agy` directly to complete setup")
     expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
   })
 
   test("kills the child and reports the exact timeout message", async () => {
     const fake = createFakeSpawn()
     const run = runAgyCommand(
-      { modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { default: "Gemini" } } },
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello",
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+      },
       {
         spawn: fake.spawn,
         setTimeout: (handler) => {
@@ -145,7 +205,16 @@ describe("runAgyCommand", () => {
     const fake = createFakeSpawn()
     const abortController = new AbortController()
     const run = runAgyCommand(
-      { modelId: "default", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { default: "Gemini" } }, abortSignal: abortController.signal },
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello",
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        abortSignal: abortController.signal,
+      },
       { spawn: fake.spawn },
     )
 

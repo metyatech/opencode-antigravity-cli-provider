@@ -51,6 +51,10 @@ describe("resolveAgyModel", () => {
     expect(() => resolveAgyModel("missing", {})).toThrow("No Antigravity CLI model mapping configured")
   })
 
+  test("'default' is not special-cased: missing modelMap.default raises the same error as any other slug", () => {
+    expect(() => resolveAgyModel("default", {})).toThrow("No Antigravity CLI model mapping configured")
+  })
+
   test("rejects invalid mappings before launch", () => {
     const invalid = { broken: null } as unknown as Record<string, string>
     expect(() => resolveAgyModel("broken", invalid)).toThrow("Model mappings must be non-empty strings")

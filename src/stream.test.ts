@@ -57,13 +57,26 @@ describe("createAgyTextStream", () => {
     })
 
     const parts = await collectStream(
-      createAgyTextStream({ modelId: "gemini", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } } }, { spawn: fake.spawn }),
+      createAgyTextStream(
+        {
+          modelId: "gemini-3-5-flash-medium",
+          prompt: "hello",
+          options: {
+            command: "fake-agy",
+            timeoutMs: 1_000,
+            modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+          },
+        },
+        { spawn: fake.spawn },
+      ),
     )
 
     expect(parts.map((part) => part.type)).toEqual(["stream-start", "text-start", "text-delta", "text-delta", "text-end", "finish"])
     expect(parts.filter((part) => part.type === "text-delta").map((part) => part.delta)).toEqual(["hello ", "world"])
     expect(parts.at(-1)).toMatchObject({ type: "finish", finishReason: { unified: "stop", raw: undefined } })
     expect(fake.calls[0].options.shell).toBe(false)
+    expect(fake.calls[0].args).toEqual(["--model", "Gemini 3.5 Flash (Medium)", "-p", "hello"])
+    expect(fake.calls[0].args[fake.calls[0].args.indexOf("--model") + 1]).toBe("Gemini 3.5 Flash (Medium)")
   })
 
   test("propagates interactive setup errors", async () => {
@@ -72,15 +85,37 @@ describe("createAgyTextStream", () => {
     })
 
     await expect(
-      collectStream(createAgyTextStream({ modelId: "gemini", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } } }, { spawn: fake.spawn })),
-    ).rejects.toThrow(
-      "Run `agy` directly to complete setup",
-    )
+      collectStream(
+        createAgyTextStream(
+          {
+            modelId: "gemini-3-5-flash-medium",
+            prompt: "hello",
+            options: {
+              command: "fake-agy",
+              timeoutMs: 1_000,
+              modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+            },
+          },
+          { spawn: fake.spawn },
+        ),
+      ),
+    ).rejects.toThrow("Run `agy` directly to complete setup")
   })
 
   test("kills the child when the stream reader cancels", async () => {
     const fake = createFakeSpawn()
-    const stream = createAgyTextStream({ modelId: "gemini", prompt: "hello", options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } } }, { spawn: fake.spawn })
+    const stream = createAgyTextStream(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello",
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+      },
+      { spawn: fake.spawn },
+    )
     const reader = stream.getReader()
 
     await reader.read()

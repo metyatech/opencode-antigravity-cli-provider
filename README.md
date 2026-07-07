@@ -19,16 +19,13 @@ bun install
 bun run build
 ```
 
-Then add the built plugin to your OpenCode config from a local path. The plugin
-auto-registers the `antigravity-cli` provider so it shows up under `/models`
-(for example `antigravity-cli/default`) without you having to add it under
-`provider["antigravity-cli"]` yourself:
+Then add the built plugin to your OpenCode config from the local vendor path. The plugin auto-registers the `antigravity-cli` provider so it shows up under `/models` with each discovered slug (for example `antigravity-cli/gemini-3-5-flash-medium` and `antigravity-cli/claude-opus-4-6-thinking`) without you having to add it under `provider["antigravity-cli"]` yourself:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "file:///path/to/opencode-antigravity-cli-provider/dist/index.js"
+    "./vendor/opencode-antigravity-cli-provider/dist/index.js"
   ]
 }
 ```
@@ -44,6 +41,7 @@ For example, this `agy models` output:
 
 ```text
 Gemini 3.5 Flash (Medium)
+Claude Opus 4.6 (Thinking)
 Claude Sonnet 4.6 (Thinking)
 ```
 
@@ -51,12 +49,13 @@ creates OpenCode model IDs:
 
 ```text
 antigravity-cli/gemini-3-5-flash-medium
+antigravity-cli/claude-opus-4-6-thinking
 antigravity-cli/claude-sonnet-4-6-thinking
 ```
 
 Those slug IDs are only OpenCode IDs. The provider passes the exact display
-names back to `agy --model`, such as `Gemini 3.5 Flash (Medium)`. There is no
-default model and no alias mapping.
+names back to `agy --model`, such as `Gemini 3.5 Flash (Medium)` or
+`Claude Opus 4.6 (Thinking)`. There is no default model and no alias mapping.
 
 The generated provider config has this shape:
 
@@ -64,19 +63,23 @@ The generated provider config has this shape:
 {
   "provider": {
     "antigravity-cli": {
-      "npm": "file:///path/to/opencode-antigravity-cli-provider/dist/provider.js",
+      "npm": "./vendor/opencode-antigravity-cli-provider/dist/provider.js",
       "name": "Antigravity CLI",
       "options": {
         "command": "agy",
         "timeoutMs": 1800000,
         "modelMap": {
-          "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)"
+          "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)",
+          "claude-opus-4-6-thinking": "Claude Opus 4.6 (Thinking)"
         },
         "extraArgs": []
       },
       "models": {
         "gemini-3-5-flash-medium": {
           "name": "Gemini 3.5 Flash (Medium)"
+        },
+        "claude-opus-4-6-thinking": {
+          "name": "Claude Opus 4.6 (Thinking)"
         }
       }
     }
@@ -89,15 +92,16 @@ injection. It does not fall back to a hard-coded model.
 
 To make Antigravity your OpenCode default model, opt in explicitly via the
 plugin option `model` using one discovered slug while leaving your top-level
-`config.model` unset:
+`config.model` unset. The example below selects Claude Opus 4.6 (Thinking) as
+the default for new sessions:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     [
-      "file:///path/to/opencode-antigravity-cli-provider/dist/index.js",
-      { "model": "gemini-3-5-flash-medium" }
+      "./vendor/opencode-antigravity-cli-provider/dist/index.js",
+      { "model": "claude-opus-4-6-thinking" }
     ]
   ]
 }
@@ -113,7 +117,7 @@ Disable plugin injection with plugin options:
 {
   "plugin": [
     [
-      "file:///path/to/opencode-antigravity-cli-provider/dist/index.js",
+      "./vendor/opencode-antigravity-cli-provider/dist/index.js",
       {
         "enabled": false
       }
@@ -151,13 +155,13 @@ Example with supported options:
 {
   "plugin": [
     [
-      "file:///path/to/opencode-antigravity-cli-provider/dist/index.js",
+      "./vendor/opencode-antigravity-cli-provider/dist/index.js",
       {
         "command": "agy",
         "timeoutMs": 1800000,
         "discoveryTimeoutMs": 10000,
         "extraArgs": [],
-        "model": "gemini-3-5-flash-medium"
+        "model": "claude-opus-4-6-thinking"
       }
     ]
   ]
