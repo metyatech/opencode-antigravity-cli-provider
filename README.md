@@ -41,7 +41,7 @@ For example, this `agy models` output:
 
 ```text
 Gemini 3.5 Flash (Medium)
-Claude Opus 4.6 (Thinking)
+Claude Opus 4.6 Thinking
 Claude Sonnet 4.6 (Thinking)
 ```
 
@@ -55,7 +55,7 @@ antigravity-cli/claude-sonnet-4-6-thinking
 
 Those slug IDs are only OpenCode IDs. The provider passes the exact display
 names back to `agy --model`, such as `Gemini 3.5 Flash (Medium)` or
-`Claude Opus 4.6 (Thinking)`. There is no default model and no alias mapping.
+`Claude Opus 4.6 Thinking`. There is no default model and no alias mapping.
 
 The generated provider config has this shape:
 
@@ -70,7 +70,7 @@ The generated provider config has this shape:
         "timeoutMs": 1800000,
         "modelMap": {
           "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)",
-          "claude-opus-4-6-thinking": "Claude Opus 4.6 (Thinking)"
+          "claude-opus-4-6-thinking": "Claude Opus 4.6 Thinking"
         },
         "extraArgs": []
       },
@@ -79,7 +79,7 @@ The generated provider config has this shape:
           "name": "Gemini 3.5 Flash (Medium)"
         },
         "claude-opus-4-6-thinking": {
-          "name": "Claude Opus 4.6 (Thinking)"
+          "name": "Claude Opus 4.6 Thinking"
         }
       }
     }
@@ -92,7 +92,7 @@ injection. It does not fall back to a hard-coded model.
 
 To make Antigravity your OpenCode default model, opt in explicitly via the
 plugin option `model` using one discovered slug while leaving your top-level
-`config.model` unset. The example below selects Claude Opus 4.6 (Thinking) as
+`config.model` unset. The example below selects Claude Opus 4.6 Thinking as
 the default for new sessions:
 
 ```jsonc
