@@ -29,8 +29,8 @@ describe("normalizeOptions", () => {
     expect(() => normalizeOptions(options)).toThrow("extraArgs must be an array, not a string")
   })
 
-  test("rejects auth, account, project, and credential extra args", () => {
-    for (const arg of ["--api-key", "--token=value", "--auth", "--credential", "--credentials", "--project", "--account", "--login", "--logout"]) {
+  test("rejects auth, account, project, credential, and model extra args", () => {
+    for (const arg of ["--api-key", "--token=value", "--auth", "--credential", "--credentials", "--project", "--account", "--login", "--logout", "--model", "--model=Some Model"]) {
       expect(() => normalizeOptions({ extraArgs: [arg] })).toThrow("Configure authentication by running agy directly")
     }
   })

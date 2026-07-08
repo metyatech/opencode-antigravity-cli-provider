@@ -10,7 +10,7 @@ export const DEFAULT_ANTIGRAVITY_CLI_OPTIONS: ResolvedAntigravityCliProviderOpti
   env: {},
 }
 
-const forbiddenExtraArgs = ["--api-key", "--token", "--auth", "--credential", "--credentials", "--project", "--account", "--login", "--logout"]
+const forbiddenExtraArgs = ["--api-key", "--token", "--auth", "--credential", "--credentials", "--project", "--account", "--login", "--logout", "--model"]
 
 const hasOwn = (record: Record<string, string>, key: string) => Object.prototype.hasOwnProperty.call(record, key)
 

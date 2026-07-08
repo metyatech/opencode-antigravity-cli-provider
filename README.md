@@ -181,7 +181,7 @@ Example with supported options:
 
 This project only bridges to the official `agy` CLI. It does not introduce OAuth, keyring inspection, internal Antigravity APIs, sidecars, proxies, local OpenAI-compatible servers, account rotation, quota bypasses, credential managers, token fetchers, direct Google/Antigravity backend fetches, aliases, or a doctor command.
 
-The provider also rejects dangerous authentication or account-routing arguments in `extraArgs`: `--api-key`, `--token`, `--auth`, `--credential`, `--credentials`, `--project`, `--account`, `--login`, and `--logout`. Subprocesses are spawned with `shell: false`; this repository does not use `child_process.exec`.
+`extraArgs` are intended for generation helper arguments only; they cannot be used to override `--model` because model selection is determined exclusively by the OpenCode selected slug and the discovery-derived `modelMap`. The provider also rejects dangerous authentication or account-routing arguments in `extraArgs`: `--api-key`, `--token`, `--auth`, `--credential`, `--credentials`, `--project`, `--account`, `--login`, `--logout`, and `--model`. Subprocesses are spawned with `shell: false`; this repository does not use `child_process.exec`.
 
 Run `agy` directly for interactive setup. If stdout or stderr looks like a login, permission, browser authorization, terms, theme, or workspace-trust prompt, the provider kills the child process and asks you to complete setup in `agy` directly.
 
