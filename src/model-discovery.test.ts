@@ -78,7 +78,7 @@ const actualAgyModelNames = [
 
 const actualAgyModelsOutput = `${actualAgyModelNames.join("\n")}\n`
 
-const ptyAgyModelsOutput = `\x1b]0;Antigravity models\x07\x1b[?25lFetching models...\r⠋ Fetching models...\rFetched 8 models\r\n\x1b[2K${actualAgyModelNames[0]}\r\n${actualAgyModelNames[1]}\n\x1b[32m${actualAgyModelNames[2]}\x1b[0m\n${actualAgyModelNames[3]}\r\n${actualAgyModelNames[4]}\n\x1b[1A\x1b[2K${actualAgyModelNames[5]}\n${actualAgyModelNames[6]}\n\x07${actualAgyModelNames[7]}\x1b[?25h\n`
+const ptyAgyModelsOutput = `\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H⠋ Fetching available models...\u001b]0;C:\\Users\\Origin\\AppData\\Local\\agy\\bin\\agy.exe\u0007\u001b[H\u001b[K${actualAgyModelNames[0]}\r\n${actualAgyModelNames[1]}\r\n\u001b[32m${actualAgyModelNames[2]}\u001b[0m\r\n${actualAgyModelNames[3]}\r\n${actualAgyModelNames[4]}\r\n${actualAgyModelNames[5]}\r\n${actualAgyModelNames[6]}\r\n\u001b[K${actualAgyModelNames[7]}\r\n\u001b[?25h\n`
 
 // Regression: real `agy models` emits the first model line, then a spinner
 // redraws the same PTY row using a bare `\r`. A sanitizer that collapses to
@@ -133,7 +133,9 @@ describe("resolveAgyExecutable", () => {
 
 describe("sanitizeAgyModelsPtyOutput", () => {
   test("removes ANSI, OSC title, BEL, spinner/fetching lines, carriage returns, and residue", () => {
-    expect(sanitizeAgyModelsPtyOutput(ptyAgyModelsOutput).split("\n")).toEqual(actualAgyModelNames)
+    const sanitized = sanitizeAgyModelsPtyOutput(ptyAgyModelsOutput)
+    expect(sanitized.split("\n")).toEqual(actualAgyModelNames)
+    expect(parseAgyModelListOutput(sanitized)).toEqual(actualAgyModelNames)
   })
 
   test("preserves the first model line when a bare-CR spinner redraws the same PTY row", () => {
