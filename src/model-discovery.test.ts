@@ -1,55 +1,132 @@
 import { describe, expect, test } from "bun:test"
-import { EventEmitter } from "node:events"
-import { PassThrough } from "node:stream"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import {
   buildAgyModelDiscoveryResult,
   discoverAgyModels,
   parseAgyModelListOutput,
+  resolveAgyExecutable,
+  sanitizeAgyModelsPtyOutput,
   slugifyAgyModelName,
 } from "./model-discovery"
-import type { AgyChildProcess, AgySpawn, AgySpawnOptions } from "./types"
+import type { AgyPtyDisposable, AgyPtyProcess, AgyPtySpawn, AgyPtySpawnOptions, AgyPtyExitEvent } from "./model-discovery"
 
-class FakeAgyChild extends EventEmitter implements AgyChildProcess {
-  stdout = new PassThrough()
-  stderr = new PassThrough()
-  killSignals: Array<NodeJS.Signals | number | undefined> = []
+class FakeAgyPty implements AgyPtyProcess {
+  private dataListeners: Array<(data: string) => void> = []
+  private exitListeners: Array<(event: AgyPtyExitEvent) => void> = []
+  killSignals: Array<string | undefined> = []
 
-  kill(signal?: NodeJS.Signals | number) {
-    this.killSignals.push(signal)
-    queueMicrotask(() => this.emit("close", null, "SIGTERM"))
-    return true
+  onData(listener: (data: string) => void): AgyPtyDisposable {
+    this.dataListeners.push(listener)
+    return { dispose: () => this.removeDataListener(listener) }
   }
 
-  close(code: number | null) {
-    this.emit("close", code, null)
+  onExit(listener: (event: AgyPtyExitEvent) => void): AgyPtyDisposable {
+    this.exitListeners.push(listener)
+    return { dispose: () => this.removeExitListener(listener) }
+  }
+
+  kill(signal?: string) {
+    this.killSignals.push(signal)
+    queueMicrotask(() => this.exit(1))
+  }
+
+  writeData(data: string) {
+    for (const listener of [...this.dataListeners]) {
+      listener(data)
+    }
+  }
+
+  exit(exitCode: number) {
+    for (const listener of [...this.exitListeners]) {
+      listener({ exitCode })
+    }
+  }
+
+  private removeDataListener(listener: (data: string) => void) {
+    this.dataListeners = this.dataListeners.filter((candidate) => candidate !== listener)
+  }
+
+  private removeExitListener(listener: (event: AgyPtyExitEvent) => void) {
+    this.exitListeners = this.exitListeners.filter((candidate) => candidate !== listener)
   }
 }
 
-const createFakeSpawn = (schedule?: (child: FakeAgyChild) => void) => {
-  const calls: Array<{ command: string; args: string[]; options: AgySpawnOptions; child: FakeAgyChild }> = []
-  const spawn: AgySpawn = (command, args, options) => {
-    const child = new FakeAgyChild()
+const createFakePtySpawn = (schedule?: (child: FakeAgyPty) => void) => {
+  const calls: Array<{ command: string; args: string[]; options: AgyPtySpawnOptions; child: FakeAgyPty }> = []
+  const ptySpawn: AgyPtySpawn = (command, args, options) => {
+    const child = new FakeAgyPty()
     calls.push({ command, args, options, child })
     schedule?.(child)
     return child
   }
 
-  return { calls, spawn }
+  return { calls, ptySpawn }
 }
 
-const actualAgyModelsOutput = `Gemini 3.5 Flash (Medium)
-Gemini 3.5 Flash (High)
-Gemini 3.5 Flash (Low)
-Gemini 3.1 Pro (Low)
-Gemini 3.1 Pro (High)
-Claude Sonnet 4.6 (Thinking)
-Claude Opus 4.6 (Thinking)
-GPT-OSS 120B (Medium)
-`
+const actualAgyModelNames = [
+  "Gemini 3.5 Flash (Medium)",
+  "Gemini 3.5 Flash (High)",
+  "Gemini 3.5 Flash (Low)",
+  "Gemini 3.1 Pro (Low)",
+  "Gemini 3.1 Pro (High)",
+  "Claude Sonnet 4.6 (Thinking)",
+  "Claude Opus 4.6 (Thinking)",
+  "GPT-OSS 120B (Medium)",
+]
+
+const actualAgyModelsOutput = `${actualAgyModelNames.join("\n")}\n`
+
+const ptyAgyModelsOutput = `\x1b]0;Antigravity models\x07\x1b[?25lFetching models...\r⠋ Fetching models...\rFetched 8 models\r\n\x1b[2K${actualAgyModelNames[0]}\r\n${actualAgyModelNames[1]}\n\x1b[32m${actualAgyModelNames[2]}\x1b[0m\n${actualAgyModelNames[3]}\r\n${actualAgyModelNames[4]}\n\x1b[1A\x1b[2K${actualAgyModelNames[5]}\n${actualAgyModelNames[6]}\n\x07${actualAgyModelNames[7]}\x1b[?25h\n`
+
+const withTempDirectory = (callback: (directory: string) => void) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "agy-resolve-"))
+  try {
+    callback(directory)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
 
 describe("slugifyAgyModelName", () => {
   test("trims, lowercases, replaces non-alphanumeric runs, and trims dashes", () => {
     expect(slugifyAgyModelName("  Gemini 3.5 Flash (Medium)  ")).toBe("gemini-3-5-flash-medium")
+  })
+})
+
+describe("resolveAgyExecutable", () => {
+  test("finds agy.exe from PATH and PATHEXT on Windows", () => {
+    withTempDirectory((directory) => {
+      const executable = path.join(directory, "agy.exe")
+      writeFileSync(executable, "")
+      const env: NodeJS.ProcessEnv = { PATH: directory, PATHEXT: ".CMD;.EXE" }
+
+      expect(resolveAgyExecutable("agy", env, "win32")).toBe(executable)
+    })
+  })
+
+  test("prefers agy.exe over agy.cmd when both exist", () => {
+    withTempDirectory((directory) => {
+      const cmd = path.join(directory, "agy.cmd")
+      const exe = path.join(directory, "agy.exe")
+      writeFileSync(cmd, "")
+      writeFileSync(exe, "")
+      const env: NodeJS.ProcessEnv = { PATH: directory, PATHEXT: ".CMD;.EXE" }
+
+      expect(resolveAgyExecutable("agy", env, "win32")).toBe(exe)
+    })
+  })
+
+  test("preserves explicit paths", () => {
+    expect(resolveAgyExecutable("C:\\tools\\agy.cmd", {}, "win32")).toBe("C:\\tools\\agy.cmd")
+    expect(resolveAgyExecutable("./bin/agy", {}, "linux")).toBe("./bin/agy")
+  })
+})
+
+describe("sanitizeAgyModelsPtyOutput", () => {
+  test("removes ANSI, OSC title, BEL, spinner/fetching lines, carriage returns, and residue", () => {
+    expect(sanitizeAgyModelsPtyOutput(ptyAgyModelsOutput).split("\n")).toEqual(actualAgyModelNames)
   })
 })
 
@@ -74,16 +151,7 @@ describe("parseAgyModelListOutput", () => {
     const parsed = parseAgyModelListOutput(actualAgyModelsOutput)
     const result = buildAgyModelDiscoveryResult(parsed)
 
-    expect(parsed).toEqual([
-      "Gemini 3.5 Flash (Medium)",
-      "Gemini 3.5 Flash (High)",
-      "Gemini 3.5 Flash (Low)",
-      "Gemini 3.1 Pro (Low)",
-      "Gemini 3.1 Pro (High)",
-      "Claude Sonnet 4.6 (Thinking)",
-      "Claude Opus 4.6 (Thinking)",
-      "GPT-OSS 120B (Medium)",
-    ])
+    expect(parsed).toEqual(actualAgyModelNames)
     expect(result.discovered[0]).toEqual({
       id: "gemini-3-5-flash-medium",
       name: "Gemini 3.5 Flash (Medium)",
@@ -109,59 +177,82 @@ Models:
 })
 
 describe("discoverAgyModels", () => {
-  test("spawns official agy models with shell false", async () => {
-    const fake = createFakeSpawn((child) => {
+  test("spawns official agy models through PTY with terminal dimensions and environment", async () => {
+    const fake = createFakePtySpawn((child) => {
       queueMicrotask(() => {
-        child.stdout.write(actualAgyModelsOutput)
-        child.close(0)
+        child.writeData(actualAgyModelsOutput)
+        child.exit(0)
       })
     })
 
-    const result = await discoverAgyModels({ command: "fake-agy", timeoutMs: 1_000, cwd: ".", env: { AGY_TEST_ENV: "1" } }, { spawn: fake.spawn })
+    const result = await discoverAgyModels({ command: "fake-agy", timeoutMs: 1_000, cwd: ".", env: { AGY_TEST_ENV: "1" } }, { ptySpawn: fake.ptySpawn, platform: "linux" })
 
     expect(result.discovered).toHaveLength(8)
     expect(fake.calls[0].command).toBe("fake-agy")
     expect(fake.calls[0].args).toEqual(["models"])
-    expect(fake.calls[0].options.shell).toBe(false)
+    expect(fake.calls[0].options.name).toBe("xterm-color")
+    expect(fake.calls[0].options.cols).toBe(120)
+    expect(fake.calls[0].options.rows).toBe(30)
     expect(fake.calls[0].options.env.AGY_TEST_ENV).toBe("1")
   })
 
-  test("fails fast on interactive prompts and kills the child", async () => {
-    const fake = createFakeSpawn((child) => {
-      queueMicrotask(() => child.stderr.write("Please sign in to continue"))
+  test("discovers PTY output after sanitizing spinner and terminal control sequences", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData(ptyAgyModelsOutput)
+        child.exit(0)
+      })
     })
 
-    await expect(discoverAgyModels({ command: "fake-agy", timeoutMs: 1_000 }, { spawn: fake.spawn })).rejects.toThrow("Run `agy` directly to complete setup")
-    expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
+    const result = await discoverAgyModels({ command: "fake-agy", timeoutMs: 1_000 }, { ptySpawn: fake.ptySpawn, platform: "linux" })
+
+    expect(result.discovered).toHaveLength(8)
+    expect(result.modelMap).toMatchObject({
+      "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)",
+      "claude-opus-4-6-thinking": "Claude Opus 4.6 (Thinking)",
+      "gpt-oss-120b-medium": "GPT-OSS 120B (Medium)",
+    })
   })
 
-  test("kills the child on timeout", async () => {
-    const fake = createFakeSpawn()
+  test("fails fast on interactive prompts and kills the PTY child", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => child.writeData("Please sign in to continue"))
+    })
+
+    await expect(discoverAgyModels({ command: "./fake-agy", timeoutMs: 1_000 }, { ptySpawn: fake.ptySpawn, platform: "win32" })).rejects.toThrow(
+      "Run `agy` directly to complete setup",
+    )
+    expect(fake.calls[0].child.killSignals).toEqual([undefined])
+  })
+
+  test("kills the PTY child on timeout", async () => {
+    const fake = createFakePtySpawn()
     const discovery = discoverAgyModels(
-      { command: "fake-agy", timeoutMs: 1_000 },
+      { command: "./fake-agy", timeoutMs: 1_000 },
       {
-        spawn: fake.spawn,
+        ptySpawn: fake.ptySpawn,
+        platform: "win32",
         setTimeout: (handler) => {
           queueMicrotask(() => handler())
-          return 1 as unknown as ReturnType<typeof setTimeout>
+          return setTimeout(() => undefined, 0)
         },
         clearTimeout: () => undefined,
       },
     )
 
     await expect(discovery).rejects.toThrow("Antigravity CLI timed out after 1000ms.")
-    expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
+    expect(fake.calls[0].child.killSignals).toEqual([undefined])
   })
 
   test("propagates nonzero exit diagnostics", async () => {
-    const fake = createFakeSpawn((child) => {
+    const fake = createFakePtySpawn((child) => {
       queueMicrotask(() => {
-        child.stderr.write("flags provided but not defined: -json")
-        child.close(1)
+        child.writeData("flags provided but not defined: -json")
+        child.exit(1)
       })
     })
 
-    await expect(discoverAgyModels({ command: "fake-agy", timeoutMs: 1_000 }, { spawn: fake.spawn })).rejects.toThrow(
+    await expect(discoverAgyModels({ command: "fake-agy", timeoutMs: 1_000 }, { ptySpawn: fake.ptySpawn, platform: "linux" })).rejects.toThrow(
       "Antigravity CLI failed with exit code 1. flags provided but not defined: -json",
     )
   })

@@ -1,4 +1,5 @@
-import { spawn as nodeSpawn } from "node:child_process"
+import { statSync } from "node:fs"
+import path from "node:path"
 import {
   AntigravityCliProviderError,
   AntigravityCliTimeoutError,
@@ -7,7 +8,7 @@ import {
   createNoOutputError,
   isInteractivePrompt,
 } from "./errors"
-import type { AgyClearTimeout, AgySetTimeout, AgySpawn } from "./types"
+import type { AgyClearTimeout, AgySetTimeout } from "./types"
 
 export type DiscoveredAgyModel = {
   id: string
@@ -28,16 +29,49 @@ export type DiscoverAgyModelsOptions = {
   env?: Record<string, string>
 }
 
-export type DiscoverAgyModelsDependencies = {
-  spawn?: AgySpawn
-  setTimeout?: AgySetTimeout
-  clearTimeout?: AgyClearTimeout
+export type AgyPtySpawnOptions = {
+  name: string
+  cols: number
+  rows: number
+  cwd: string
+  env: NodeJS.ProcessEnv
 }
 
-const defaultSpawn: AgySpawn = (command, args, options) => nodeSpawn(command, args, options)
-const defaultDiscoveryTimeoutMs = 10_000
+export type AgyPtyExitEvent = {
+  exitCode: number
+  signal?: number
+}
 
-const decodeChunk = (chunk: unknown) => (chunk instanceof Uint8Array ? new TextDecoder().decode(chunk) : String(chunk))
+export type AgyPtyDisposable = {
+  dispose(): void
+}
+
+export type AgyPtyProcess = {
+  onData(listener: (data: string) => void): AgyPtyDisposable
+  onExit(listener: (event: AgyPtyExitEvent) => void): AgyPtyDisposable
+  kill(signal?: string): void
+}
+
+export type AgyPtySpawn = (command: string, args: string[], options: AgyPtySpawnOptions) => AgyPtyProcess
+
+export type AgyPtyModule = {
+  spawn: AgyPtySpawn
+}
+
+export type DiscoverAgyModelsDependencies = {
+  ptySpawn?: AgyPtySpawn
+  loadNodePty?: () => Promise<AgyPtyModule>
+  setTimeout?: AgySetTimeout
+  clearTimeout?: AgyClearTimeout
+  platform?: NodeJS.Platform
+}
+
+const defaultDiscoveryTimeoutMs = 60_000
+
+const defaultLoadNodePty = async (): Promise<AgyPtyModule> => {
+  const nodePty = await import("node-pty")
+  return { spawn: nodePty.spawn }
+}
 
 const ignoredLinePatterns = [
   /^usage\b/i,
@@ -53,6 +87,91 @@ const ignoredLinePatterns = [
 ]
 
 export const slugifyAgyModelName = (name: string) => name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+
+const hasPathSeparator = (command: string) => command.includes("/") || command.includes("\\")
+
+const getWindowsEnvValue = (env: NodeJS.ProcessEnv, key: string) => {
+  const entry = Object.entries(env).find(([entryKey]) => entryKey.toLowerCase() === key.toLowerCase())
+  return entry?.[1]
+}
+
+const normalizeWindowsExtension = (extension: string) => {
+  const normalized = extension.trim()
+  return normalized.length === 0 ? "" : normalized.startsWith(".") ? normalized.toUpperCase() : `.${normalized.toUpperCase()}`
+}
+
+const windowsPathextPriority = (extension: string) => {
+  switch (extension) {
+    case ".EXE":
+      return 0
+    case ".COM":
+      return 1
+    case ".CMD":
+      return 2
+    case ".BAT":
+      return 3
+    default:
+      return 4
+  }
+}
+
+const getWindowsPathext = (env: NodeJS.ProcessEnv) => {
+  const rawPathext = getWindowsEnvValue(env, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD"
+  const extensions = rawPathext.split(";").map(normalizeWindowsExtension).filter((extension) => extension.length > 0)
+  const uniqueExtensions = [...new Set(extensions)]
+  return uniqueExtensions.sort((left, right) => windowsPathextPriority(left) - windowsPathextPriority(right))
+}
+
+const isExecutableFile = (candidate: string) => {
+  try {
+    return statSync(candidate).isFile()
+  } catch {
+    return false
+  }
+}
+
+export const resolveAgyExecutable = (command: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform) => {
+  if (hasPathSeparator(command) || platform !== "win32") {
+    return command
+  }
+
+  const pathValue = getWindowsEnvValue(env, "PATH") ?? ""
+  const pathEntries = pathValue.split(";").map((entry) => entry.replace(/^"|"$/g, "")).filter((entry) => entry.length > 0)
+  const hasKnownExtension = getWindowsPathext(env).includes(path.win32.extname(command).toUpperCase())
+  const candidateNames = hasKnownExtension ? [command] : getWindowsPathext(env).map((extension) => `${command}${extension.toLowerCase()}`)
+
+  for (const pathEntry of pathEntries) {
+    for (const candidateName of candidateNames) {
+      const candidatePath = path.join(pathEntry, candidateName)
+      if (isExecutableFile(candidatePath)) {
+        return candidatePath
+      }
+    }
+  }
+
+  throw new AntigravityCliProviderError(`Antigravity CLI executable "${command}" was not found on PATH.`)
+}
+
+const ansiCsiPattern = new RegExp(String.raw`\x1b\[[0-?]*[ -/]*[@-~]`, "g")
+const ansiOscPattern = new RegExp(String.raw`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`, "g")
+const controlResiduePattern = new RegExp(String.raw`[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]`, "g")
+const fetchingOrSpinnerPattern = /^(?:[|/\\\-◐◓◑◒⠁-⣿]\s*)?(?:fetching|fetched)\b/i
+
+const normalizeCarriageReturns = (output: string) =>
+  output
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.split("\r").at(-1) ?? "")
+    .join("\n")
+
+export const sanitizeAgyModelsPtyOutput = (output: string) => {
+  const stripped = normalizeCarriageReturns(output.replace(ansiOscPattern, "").replace(ansiCsiPattern, "").replace(new RegExp(String.raw`\x07`, "g"), ""))
+  return stripped
+    .split("\n")
+    .map((line) => line.replace(controlResiduePattern, "").trim())
+    .filter((line) => line.length > 0 && !fetchingOrSpinnerPattern.test(line))
+    .join("\n")
+}
 
 const stripListPrefix = (line: string) => line.replace(/^\s*(?:[-*•]\s+|\d+[.)]\s+)/, "").trim()
 
@@ -84,24 +203,47 @@ export const buildAgyModelDiscoveryResult = (names: string[]): AgyModelDiscovery
 
 export const parseAgyModelListOutput = (output: string): string[] => output.split(/\r?\n/).map(stripListPrefix).filter((line) => !shouldIgnoreLine(line))
 
-export const discoverAgyModels = (options: DiscoverAgyModelsOptions = {}, dependencies: DiscoverAgyModelsDependencies = {}) => {
+export const discoverAgyModels = async (options: DiscoverAgyModelsOptions = {}, dependencies: DiscoverAgyModelsDependencies = {}) => {
   const command = options.command ?? "agy"
   const timeoutMs = options.timeoutMs ?? defaultDiscoveryTimeoutMs
-  const spawnCommand = dependencies.spawn ?? defaultSpawn
+  const loadNodePty = dependencies.loadNodePty ?? defaultLoadNodePty
+  const ptySpawn = dependencies.ptySpawn ?? (await loadNodePty()).spawn
   const setTimer = dependencies.setTimeout ?? ((handler, timeout) => setTimeout(handler, timeout))
   const clearTimer = dependencies.clearTimeout ?? ((timer) => clearTimeout(timer))
+  const platform = dependencies.platform ?? process.platform
+  const cwd = options.cwd ?? process.cwd()
+  const env = { ...process.env, ...(options.env ?? {}) }
+  const resolvedCommand = resolveAgyExecutable(command, env, platform)
 
   return new Promise<AgyModelDiscoveryResult>((resolve, reject) => {
-    const child = spawnCommand(command, ["models"], {
-      shell: false,
-      cwd: options.cwd ?? process.cwd(),
-      env: { ...process.env, ...(options.env ?? {}) },
-    })
-    let stdout = ""
-    let stderr = ""
-    let settled = false
+    let child: AgyPtyProcess
+    try {
+      child = ptySpawn(resolvedCommand, ["models"], {
+        name: "xterm-color",
+        cols: 120,
+        rows: 30,
+        cwd,
+        env,
+      })
+    } catch (error) {
+      reject(
+        new AntigravityCliProviderError(`Antigravity CLI model discovery failed to start. ${error instanceof Error ? error.message : String(error)}`, {
+          cause: error,
+        }),
+      )
+      return
+    }
 
-    const cleanup = () => clearTimer(timeout)
+    let output = ""
+    let settled = false
+    const disposables: AgyPtyDisposable[] = []
+
+    const cleanup = () => {
+      clearTimer(timeout)
+      for (const disposable of disposables) {
+        disposable.dispose()
+      }
+    }
 
     const fail = (error: Error) => {
       if (settled) {
@@ -113,57 +255,52 @@ export const discoverAgyModels = (options: DiscoverAgyModelsOptions = {}, depend
       reject(error)
     }
 
-    const killAndFail = (error: Error) => {
+    const killChild = () => {
+      if (platform === "win32") {
+        child.kill()
+        return
+      }
+
       child.kill("SIGTERM")
+    }
+
+    const killAndFail = (error: Error) => {
+      killChild()
       fail(error)
     }
 
     const timeout = setTimer(() => killAndFail(new AntigravityCliTimeoutError(timeoutMs)), timeoutMs)
 
-    child.stdout.on("data", (chunk) => {
+    disposables.push(child.onData((text) => {
       if (settled) {
         return
       }
 
-      const text = decodeChunk(chunk)
-      stdout += text
-      if (isInteractivePrompt(text) || isInteractivePrompt(stdout)) {
+      output += text
+      if (isInteractivePrompt(text) || isInteractivePrompt(output)) {
         killAndFail(createInteractiveSetupError(text))
       }
-    })
+    }))
 
-    child.stderr.on("data", (chunk) => {
-      if (settled) {
-        return
-      }
-
-      const text = decodeChunk(chunk)
-      stderr += text
-      if (isInteractivePrompt(text) || isInteractivePrompt(stderr)) {
-        killAndFail(createInteractiveSetupError(text))
-      }
-    })
-
-    child.once("error", (error) => fail(new AntigravityCliProviderError(`Antigravity CLI model discovery failed to start. ${error.message}`, { cause: error })))
-
-    child.once("close", (code) => {
+    disposables.push(child.onExit(({ exitCode }) => {
       if (settled) {
         return
       }
 
       settled = true
       cleanup()
-      if (code !== 0) {
-        reject(createExitError(code, stderr))
+      const sanitizedOutput = sanitizeAgyModelsPtyOutput(output)
+      if (exitCode !== 0) {
+        reject(createExitError(exitCode, sanitizedOutput))
         return
       }
 
-      if (stdout.trim().length === 0) {
-        reject(createNoOutputError(stderr))
+      if (sanitizedOutput.trim().length === 0) {
+        reject(createNoOutputError(output))
         return
       }
 
-      resolve(buildAgyModelDiscoveryResult(parseAgyModelListOutput(stdout)))
-    })
+      resolve(buildAgyModelDiscoveryResult(parseAgyModelListOutput(sanitizedOutput)))
+    }))
   })
 }
