@@ -2,7 +2,7 @@
 
 ## Overview
 
-`opencode-antigravity-cli-provider` is a standalone OpenCode plugin and AI SDK custom provider for the official Antigravity `agy` CLI. It registers an OpenCode provider named `antigravity-cli` and delegates generation to `agy --model <exact display name> -p <prompt>` through a subprocess bridge.
+`opencode-antigravity-cli-provider` is a standalone OpenCode plugin and AI SDK custom provider for the official Antigravity `agy` CLI. It registers an OpenCode provider named `antigravity-cli` and delegates generation to `agy --model <exact display name> -p <prompt>` through a `node-pty` pseudoterminal.
 
 This repository is intentionally narrow: it packages the provider as local plugin source for OpenCode and preserves the existing text-only `agy` CLI behavior. It does not implement an Antigravity backend client.
 
@@ -33,8 +33,10 @@ Then add the built plugin to your OpenCode config from the local vendor path. Th
 On startup, the plugin runs the official read-only `agy models` command through
 a pseudoterminal (`node-pty`) and builds OpenCode model IDs from the displayed
 model names. Discovery uses a PTY because pipe-based execution can hang or never
-emit the model list for this CLI. It auto-injects the `antigravity-cli` provider
-only if `provider["antigravity-cli"]` is absent and discovery returns at least one
+emit the model list for this CLI. Generation also uses `node-pty` because
+`agy --model <exact display name> -p <prompt>` may hang or time out when run
+through pipe-based execution. It auto-injects the `antigravity-cli` provider only
+if `provider["antigravity-cli"]` is absent and discovery returns at least one
 model. It does NOT change your top-level default `model` unless you explicitly
 pass the plugin `model` option with a discovered slug.
 
@@ -134,7 +136,7 @@ Disable plugin injection with plugin options:
 3. OpenCode can load the local vendor plugin path after this repository is built.
 4. Bun is available for local development commands.
 5. The native `node-pty` dependency can install for your OS/runtime; it is used
-   only for `agy models` discovery.
+   for both `agy models` discovery and text generation.
 
 ## Models and options
 
@@ -148,7 +150,7 @@ Provider options:
 
 - `enabled`: set to `false` to skip config injection.
 - `command`: CLI command to spawn. Defaults to `agy`.
-- `timeoutMs`: generation subprocess timeout. Defaults to `1800000` and must be between `1000` and `7200000`.
+- `timeoutMs`: generation PTY timeout. Defaults to `1800000` and must be between `1000` and `7200000`.
 - `discoveryTimeoutMs`: `agy models` discovery timeout. Defaults to `60000`.
 - `extraArgs`: extra CLI arguments passed before `--model` and `-p` for generation only.
 - `model`: optional discovered model ID such as `antigravity-cli/<slug>` to set as the top-level OpenCode default. The plugin only sets it when `config.model` is currently unset and the slug exists in the discovery result.
@@ -177,17 +179,16 @@ Example with supported options:
 - Text generation only; no OpenCode-native tool-call or approval integration.
 - No token usage reporting. Usage fields are `undefined`.
 - No cache control, conversation resume, or shared `agy` conversation state.
-- Streaming approximates stdout chunks as text deltas.
-- stderr is diagnostic-only and is never returned as generated text.
-- Each request is a fresh `agy --model <exact display name> -p` subprocess invocation.
-- Generation remains on the normal subprocess bridge; only model discovery uses
-  `node-pty`.
+- Streaming emits the final sanitized generation text as a text delta.
+- PTY terminal control sequences from generation output are sanitized before the
+  text is returned.
+- Each request is a fresh `agy --model <exact display name> -p` PTY invocation.
 
 ## Safety model
 
 This project only bridges to the official `agy` CLI. It does not introduce OAuth, keyring inspection, internal Antigravity APIs, sidecars, proxies, local OpenAI-compatible servers, account rotation, quota bypasses, credential managers, token fetchers, direct Google/Antigravity backend fetches, aliases, or a doctor command.
 
-`extraArgs` are intended for generation helper arguments only; they cannot be used to override `--model` because model selection is determined exclusively by the OpenCode selected slug and the discovery-derived `modelMap`. The provider also rejects dangerous authentication or account-routing arguments in `extraArgs`: `--api-key`, `--token`, `--auth`, `--credential`, `--credentials`, `--project`, `--account`, `--login`, `--logout`, and `--model`. Generation subprocesses are spawned with `shell: false`; discovery spawns `agy models` through `node-pty` without a shell. This repository does not use `child_process.exec`.
+`extraArgs` are intended for generation helper arguments only; they cannot be used to override `--model` because model selection is determined exclusively by the OpenCode selected slug and the discovery-derived `modelMap`. The provider also rejects dangerous authentication or account-routing arguments in `extraArgs`: `--api-key`, `--token`, `--auth`, `--credential`, `--credentials`, `--project`, `--account`, `--login`, `--logout`, and `--model`. Discovery and generation both spawn `agy` through `node-pty` without a shell. This repository does not use `child_process.exec`.
 
 Run `agy` directly for interactive setup. If stdout or stderr looks like a login, permission, browser authorization, terms, theme, or workspace-trust prompt, the provider kills the child process and asks you to complete setup in `agy` directly.
 

@@ -1,3 +1,5 @@
+import type { AgyPtyModule, AgyPtySpawn } from "./model-discovery"
+
 export type AntigravityCliProviderOptions = {
   command?: string
   timeoutMs?: number
@@ -28,34 +30,16 @@ export type AgyCommandResult = {
   stderr: string
 }
 
-export type AgySpawnOptions = {
-  shell: false
-  cwd: string
-  env: NodeJS.ProcessEnv
-}
-
-export type AgyReadableStream = {
-  on(event: "data", listener: (chunk: unknown) => void): unknown
-}
-
-export type AgyChildProcess = {
-  stdout: AgyReadableStream
-  stderr: AgyReadableStream
-  kill(signal?: NodeJS.Signals | number): boolean
-  once(event: "error", listener: (error: Error) => void): unknown
-  once(event: "close", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown
-}
-
-export type AgySpawn = (command: string, args: string[], options: AgySpawnOptions) => AgyChildProcess
-
 export type AgySetTimeout = (handler: () => void, timeoutMs: number) => ReturnType<typeof setTimeout>
 
 export type AgyClearTimeout = (timer: ReturnType<typeof setTimeout>) => void
 
 export type RunAgyCommandDependencies = {
-  spawn?: AgySpawn
+  ptySpawn?: AgyPtySpawn
+  loadNodePty?: () => Promise<AgyPtyModule>
   setTimeout?: AgySetTimeout
   clearTimeout?: AgyClearTimeout
+  platform?: NodeJS.Platform
 }
 
 export type RunAgyCommandRequest = {

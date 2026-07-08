@@ -91,7 +91,7 @@ export const slugifyAgyModelName = (name: string) => name.trim().toLowerCase().r
 const hasPathSeparator = (command: string) => command.includes("/") || command.includes("\\")
 
 const getWindowsEnvValue = (env: NodeJS.ProcessEnv, key: string) => {
-  const entry = Object.entries(env).find(([entryKey]) => entryKey.toLowerCase() === key.toLowerCase())
+  const entry = Object.entries(env).toReversed().find(([entryKey]) => entryKey.toLowerCase() === key.toLowerCase())
   return entry?.[1]
 }
 

@@ -1,35 +1,59 @@
 import { describe, expect, test } from "bun:test"
-import { EventEmitter } from "node:events"
-import { PassThrough } from "node:stream"
 import { createAgyTextStream } from "./stream"
-import type { AgyChildProcess, AgySpawn, AgySpawnOptions, LanguageModelV3StreamPart } from "./types"
+import type { AgyPtyDisposable, AgyPtyExitEvent, AgyPtyProcess, AgyPtySpawn, AgyPtySpawnOptions } from "./model-discovery"
+import type { LanguageModelV3StreamPart } from "./types"
 
-class FakeAgyChild extends EventEmitter implements AgyChildProcess {
-  stdout = new PassThrough()
-  stderr = new PassThrough()
-  killSignals: Array<NodeJS.Signals | number | undefined> = []
+class FakeAgyPty implements AgyPtyProcess {
+  private dataListeners: Array<(data: string) => void> = []
+  private exitListeners: Array<(event: AgyPtyExitEvent) => void> = []
+  killSignals: Array<string | undefined> = []
 
-  kill(signal?: NodeJS.Signals | number) {
-    this.killSignals.push(signal)
-    queueMicrotask(() => this.emit("close", null, "SIGTERM"))
-    return true
+  onData(listener: (data: string) => void): AgyPtyDisposable {
+    this.dataListeners.push(listener)
+    return { dispose: () => this.removeDataListener(listener) }
   }
 
-  close(code: number | null) {
-    this.emit("close", code, null)
+  onExit(listener: (event: AgyPtyExitEvent) => void): AgyPtyDisposable {
+    this.exitListeners.push(listener)
+    return { dispose: () => this.removeExitListener(listener) }
+  }
+
+  kill(signal?: string) {
+    this.killSignals.push(signal)
+    queueMicrotask(() => this.exit(1))
+  }
+
+  writeData(data: string) {
+    for (const listener of [...this.dataListeners]) {
+      listener(data)
+    }
+  }
+
+  exit(exitCode: number) {
+    for (const listener of [...this.exitListeners]) {
+      listener({ exitCode })
+    }
+  }
+
+  private removeDataListener(listener: (data: string) => void) {
+    this.dataListeners = this.dataListeners.filter((candidate) => candidate !== listener)
+  }
+
+  private removeExitListener(listener: (event: AgyPtyExitEvent) => void) {
+    this.exitListeners = this.exitListeners.filter((candidate) => candidate !== listener)
   }
 }
 
-const createFakeSpawn = (schedule?: (child: FakeAgyChild) => void) => {
-  const calls: Array<{ command: string; args: string[]; options: AgySpawnOptions; child: FakeAgyChild }> = []
-  const spawn: AgySpawn = (command, args, options) => {
-    const child = new FakeAgyChild()
+const createFakePtySpawn = (schedule?: (child: FakeAgyPty) => void) => {
+  const calls: Array<{ command: string; args: string[]; options: AgyPtySpawnOptions; child: FakeAgyPty }> = []
+  const ptySpawn: AgyPtySpawn = (command, args, options) => {
+    const child = new FakeAgyPty()
     calls.push({ command, args, options, child })
     schedule?.(child)
     return child
   }
 
-  return { calls, spawn }
+  return { calls, ptySpawn }
 }
 
 const collectStream = async (stream: ReadableStream<LanguageModelV3StreamPart>) => {
@@ -47,12 +71,11 @@ const collectStream = async (stream: ReadableStream<LanguageModelV3StreamPart>) 
 }
 
 describe("createAgyTextStream", () => {
-  test("emits stdout chunks as text deltas and finishes with unknown usage", async () => {
-    const fake = createFakeSpawn((child) => {
+  test("emits the final sanitized PTY output as one text delta and finishes", async () => {
+    const fake = createFakePtySpawn((child) => {
       queueMicrotask(() => {
-        child.stdout.write("hello ")
-        child.stdout.write("world")
-        child.close(0)
+        child.writeData("\u001b[2J\u001b[HOK\r\n")
+        child.exit(0)
       })
     })
 
@@ -67,21 +90,21 @@ describe("createAgyTextStream", () => {
             modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
           },
         },
-        { spawn: fake.spawn },
+        { ptySpawn: fake.ptySpawn, platform: "linux" },
       ),
     )
 
-    expect(parts.map((part) => part.type)).toEqual(["stream-start", "text-start", "text-delta", "text-delta", "text-end", "finish"])
-    expect(parts.filter((part) => part.type === "text-delta").map((part) => part.delta)).toEqual(["hello ", "world"])
+    expect(parts.map((part) => part.type)).toEqual(["stream-start", "text-start", "text-delta", "text-end", "finish"])
+    expect(parts.filter((part) => part.type === "text-delta").map((part) => part.delta)).toEqual(["OK"])
     expect(parts.at(-1)).toMatchObject({ type: "finish", finishReason: { unified: "stop", raw: undefined } })
-    expect(fake.calls[0].options.shell).toBe(false)
+    expect(fake.calls[0].options.name).toBe("xterm-color")
     expect(fake.calls[0].args).toEqual(["--model", "Gemini 3.5 Flash (Medium)", "-p", "hello"])
     expect(fake.calls[0].args[fake.calls[0].args.indexOf("--model") + 1]).toBe("Gemini 3.5 Flash (Medium)")
   })
 
   test("propagates interactive setup errors", async () => {
-    const fake = createFakeSpawn((child) => {
-      queueMicrotask(() => child.stderr.write("Permission required before use"))
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => child.writeData("Permission required before use"))
     })
 
     await expect(
@@ -96,14 +119,40 @@ describe("createAgyTextStream", () => {
               modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
             },
           },
-          { spawn: fake.spawn },
+          { ptySpawn: fake.ptySpawn, platform: "linux" },
         ),
       ),
     ).rejects.toThrow("Run `agy` directly to complete setup")
   })
 
-  test("kills the child when the stream reader cancels", async () => {
-    const fake = createFakeSpawn()
+  test("propagates nonzero exit errors", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("\u001b[31mboom\u001b[0m")
+        child.exit(1)
+      })
+    })
+
+    await expect(
+      collectStream(
+        createAgyTextStream(
+          {
+            modelId: "gemini-3-5-flash-medium",
+            prompt: "hello",
+            options: {
+              command: "fake-agy",
+              timeoutMs: 1_000,
+              modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+            },
+          },
+          { ptySpawn: fake.ptySpawn, platform: "linux" },
+        ),
+      ),
+    ).rejects.toThrow("Antigravity CLI failed with exit code 1. boom")
+  })
+
+  test("kills the PTY child when the stream reader cancels", async () => {
+    const fake = createFakePtySpawn()
     const stream = createAgyTextStream(
       {
         modelId: "gemini-3-5-flash-medium",
@@ -114,13 +163,38 @@ describe("createAgyTextStream", () => {
           modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
         },
       },
-      { spawn: fake.spawn },
+      { ptySpawn: fake.ptySpawn, platform: "linux" },
     )
     const reader = stream.getReader()
 
     await reader.read()
     await reader.cancel()
 
+    expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
+  })
+
+  test("kills the PTY child when the request abort signal fires", async () => {
+    const fake = createFakePtySpawn()
+    const abortController = new AbortController()
+    const stream = createAgyTextStream(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello",
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        abortSignal: abortController.signal,
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux" },
+    )
+    const reader = stream.getReader()
+
+    await reader.read()
+    abortController.abort()
+
+    await expect(reader.read()).rejects.toThrow("Antigravity CLI call aborted.")
     expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
   })
 })

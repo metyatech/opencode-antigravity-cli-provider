@@ -1,33 +1,59 @@
 import { describe, expect, test } from "bun:test"
-import { EventEmitter } from "node:events"
-import { PassThrough } from "node:stream"
 import { createAntigravityCliProvider } from "./provider"
-import type { AgyChildProcess, AgySpawn, AgySpawnOptions, LanguageModelV3StreamPart } from "./types"
+import type { AgyPtyDisposable, AgyPtyExitEvent, AgyPtyProcess, AgyPtySpawn, AgyPtySpawnOptions } from "./model-discovery"
+import type { LanguageModelV3StreamPart } from "./types"
 
-class FakeAgyChild extends EventEmitter implements AgyChildProcess {
-  stdout = new PassThrough()
-  stderr = new PassThrough()
+class FakeAgyPty implements AgyPtyProcess {
+  private dataListeners: Array<(data: string) => void> = []
+  private exitListeners: Array<(event: AgyPtyExitEvent) => void> = []
+  killSignals: Array<string | undefined> = []
 
-  kill() {
-    queueMicrotask(() => this.emit("close", null, "SIGTERM"))
-    return true
+  onData(listener: (data: string) => void): AgyPtyDisposable {
+    this.dataListeners.push(listener)
+    return { dispose: () => this.removeDataListener(listener) }
   }
 
-  close(code: number | null) {
-    this.emit("close", code, null)
+  onExit(listener: (event: AgyPtyExitEvent) => void): AgyPtyDisposable {
+    this.exitListeners.push(listener)
+    return { dispose: () => this.removeExitListener(listener) }
+  }
+
+  kill(signal?: string) {
+    this.killSignals.push(signal)
+    queueMicrotask(() => this.exit(1))
+  }
+
+  writeData(data: string) {
+    for (const listener of [...this.dataListeners]) {
+      listener(data)
+    }
+  }
+
+  exit(exitCode: number) {
+    for (const listener of [...this.exitListeners]) {
+      listener({ exitCode })
+    }
+  }
+
+  private removeDataListener(listener: (data: string) => void) {
+    this.dataListeners = this.dataListeners.filter((candidate) => candidate !== listener)
+  }
+
+  private removeExitListener(listener: (event: AgyPtyExitEvent) => void) {
+    this.exitListeners = this.exitListeners.filter((candidate) => candidate !== listener)
   }
 }
 
-const createFakeSpawn = (schedule?: (child: FakeAgyChild) => void) => {
-  const calls: Array<{ command: string; args: string[]; options: AgySpawnOptions; child: FakeAgyChild }> = []
-  const spawn: AgySpawn = (command, args, options) => {
-    const child = new FakeAgyChild()
+const createFakePtySpawn = (schedule?: (child: FakeAgyPty) => void) => {
+  const calls: Array<{ command: string; args: string[]; options: AgyPtySpawnOptions; child: FakeAgyPty }> = []
+  const ptySpawn: AgyPtySpawn = (command, args, options) => {
+    const child = new FakeAgyPty()
     calls.push({ command, args, options, child })
     schedule?.(child)
     return child
   }
 
-  return { calls, spawn }
+  return { calls, ptySpawn }
 }
 
 const collectStream = async (stream: ReadableStream<LanguageModelV3StreamPart>) => {
@@ -55,31 +81,31 @@ describe("createAntigravityCliProvider", () => {
     expect(model.supportedUrls).toEqual({})
   })
 
-  test("generate returns stdout text and unknown usage", async () => {
-    const fake = createFakeSpawn((child) => {
+  test("generate returns sanitized PTY stdout text and unknown usage", async () => {
+    const fake = createFakePtySpawn((child) => {
       queueMicrotask(() => {
-        child.stdout.write("provider text")
-        child.close(0)
+        child.writeData("\u001b[2J\u001b[HOK\r\n")
+        child.exit(0)
       })
     })
-    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } }, { spawn: fake.spawn })
+    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } }, { ptySpawn: fake.ptySpawn, platform: "linux" })
     const result = await provider.languageModel("gemini").doGenerate({ prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }] })
 
-    expect(result.content).toEqual([{ type: "text", text: "provider text" }])
+    expect(result.content).toEqual([{ type: "text", text: "OK" }])
     expect(result.usage.inputTokens.total).toBeUndefined()
     expect(result.finishReason).toEqual({ unified: "stop", raw: undefined })
     expect(fake.calls[0].args.at(-1)).toContain("hello")
-    expect(fake.calls[0].options.shell).toBe(false)
+    expect(fake.calls[0].options.name).toBe("xterm-color")
   })
 
-  test("stream returns text deltas from stdout", async () => {
-    const fake = createFakeSpawn((child) => {
+  test("stream returns the final sanitized PTY text delta", async () => {
+    const fake = createFakePtySpawn((child) => {
       queueMicrotask(() => {
-        child.stdout.write("streamed")
-        child.close(0)
+        child.writeData("\u001b[2J\u001b[Hstreamed\r\n")
+        child.exit(0)
       })
     })
-    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } }, { spawn: fake.spawn })
+    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } }, { ptySpawn: fake.ptySpawn, platform: "linux" })
     const result = await provider.languageModel("gemini").doStream({ prompt: [{ role: "user", content: "hello" }] })
     const parts = await collectStream(result.stream)
 
@@ -87,8 +113,8 @@ describe("createAntigravityCliProvider", () => {
   })
 
   test("unknown mapped models fail before command launch", async () => {
-    const fake = createFakeSpawn()
-    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000, modelMap: {} }, { spawn: fake.spawn })
+    const fake = createFakePtySpawn()
+    const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000, modelMap: {} }, { ptySpawn: fake.ptySpawn })
 
     await expect(provider.languageModel("missing").doGenerate({ prompt: [{ role: "user", content: "hello" }] })).rejects.toThrow("No Antigravity CLI model mapping configured")
     expect(fake.calls).toHaveLength(0)

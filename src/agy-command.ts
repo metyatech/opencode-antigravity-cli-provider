@@ -1,4 +1,3 @@
-import { spawn as nodeSpawn } from "node:child_process"
 import {
   AntigravityCliProviderError,
   AntigravityCliTimeoutError,
@@ -8,12 +7,41 @@ import {
   createNoOutputError,
   isInteractivePrompt,
 } from "./errors"
+import { resolveAgyExecutable } from "./model-discovery"
 import { buildAgyArgs, normalizeOptions, resolveAgyModel } from "./options"
-import type { AgyCommandInvocation, AgyCommandResult, AgySpawn, RunAgyCommandDependencies, RunAgyCommandRequest } from "./types"
+import type { AgyPtyDisposable, AgyPtyModule, AgyPtyProcess } from "./model-discovery"
+import type { AgyCommandInvocation, AgyCommandResult, RunAgyCommandDependencies, RunAgyCommandRequest } from "./types"
 
-const defaultSpawn: AgySpawn = (command, args, options) => nodeSpawn(command, args, options)
+const defaultLoadNodePty = async (): Promise<AgyPtyModule> => {
+  const nodePty = await import("node-pty")
+  return { spawn: nodePty.spawn }
+}
 
-const decodeChunk = (chunk: unknown) => (chunk instanceof Uint8Array ? new TextDecoder().decode(chunk) : String(chunk))
+const ansiCsiPattern = new RegExp(String.raw`\x1b\[[0-?]*[ -/]*[@-~]`, "g")
+const ansiOscPattern = new RegExp(String.raw`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`, "g")
+const belPattern = new RegExp(String.raw`\x07`, "g")
+const residualControlPattern = new RegExp(String.raw`[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]`, "g")
+
+export const sanitizeAgyGenerationPtyOutput = (output: string): string => {
+  const sanitized = output
+    .replace(ansiOscPattern, "")
+    .replace(ansiCsiPattern, "")
+    .replace(belPattern, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(residualControlPattern, "")
+  const lines = sanitized.split("\n")
+
+  while (lines.length > 0 && lines[0].trim().length === 0) {
+    lines.shift()
+  }
+
+  while (lines.length > 0 && lines.at(-1)?.trim().length === 0) {
+    lines.pop()
+  }
+
+  return lines.join("\n").trim()
+}
 
 export const buildAgyCommandInvocation = (request: RunAgyCommandRequest): AgyCommandInvocation => {
   const options = normalizeOptions(request.options)
@@ -28,92 +56,110 @@ export const buildAgyCommandInvocation = (request: RunAgyCommandRequest): AgyCom
 
 export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAgyCommandDependencies = {}) => {
   const invocation = buildAgyCommandInvocation(request)
-  const spawnCommand = dependencies.spawn ?? defaultSpawn
-  const setTimer = dependencies.setTimeout ?? ((handler, timeoutMs) => setTimeout(handler, timeoutMs))
-  const clearTimer = dependencies.clearTimeout ?? ((timer) => clearTimeout(timer))
+  const run = async () => {
+    const loadNodePty = dependencies.loadNodePty ?? defaultLoadNodePty
+    const ptySpawn = dependencies.ptySpawn ?? (await loadNodePty()).spawn
+    const setTimer = dependencies.setTimeout ?? ((handler, timeoutMs) => setTimeout(handler, timeoutMs))
+    const clearTimer = dependencies.clearTimeout ?? ((timer) => clearTimeout(timer))
+    const platform = dependencies.platform ?? process.platform
+    const env = { ...process.env, ...invocation.options.env }
+    const resolvedCommand = resolveAgyExecutable(invocation.command, env, platform)
 
-  return new Promise<AgyCommandResult>((resolve, reject) => {
-    const child = spawnCommand(invocation.command, invocation.args, {
-      shell: false,
-      cwd: invocation.options.cwd,
-      env: { ...process.env, ...invocation.options.env },
+    return new Promise<AgyCommandResult>((resolve, reject) => {
+      let child: AgyPtyProcess
+      try {
+        child = ptySpawn(resolvedCommand, invocation.args, {
+          name: "xterm-color",
+          cols: 120,
+          rows: 30,
+          cwd: invocation.options.cwd,
+          env,
+        })
+      } catch (error) {
+        reject(new AntigravityCliProviderError(`Antigravity CLI failed to start. ${error instanceof Error ? error.message : String(error)}`, { cause: error }))
+        return
+      }
+
+      let output = ""
+      let settled = false
+      const disposables: AgyPtyDisposable[] = []
+
+      const cleanup = () => {
+        clearTimer(timeout)
+        request.abortSignal?.removeEventListener("abort", abort)
+        for (const disposable of disposables) {
+          disposable.dispose()
+        }
+      }
+
+      const fail = (error: Error) => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+        reject(error)
+      }
+
+      const killChild = () => {
+        if (platform === "win32") {
+          child.kill()
+          return
+        }
+
+        child.kill("SIGTERM")
+      }
+
+      const killAndFail = (error: Error) => {
+        killChild()
+        fail(error)
+      }
+
+      const timeout = setTimer(() => killAndFail(new AntigravityCliTimeoutError(invocation.options.timeoutMs)), invocation.options.timeoutMs)
+      const abort = () => killAndFail(createAbortError())
+
+      if (request.abortSignal?.aborted) {
+        abort()
+        return
+      }
+
+      request.abortSignal?.addEventListener("abort", abort, { once: true })
+
+      disposables.push(child.onData((text) => {
+        if (settled) {
+          return
+        }
+
+        output += text
+        if (isInteractivePrompt(text) || isInteractivePrompt(output)) {
+          killAndFail(createInteractiveSetupError(sanitizeAgyGenerationPtyOutput(text)))
+        }
+      }))
+
+      disposables.push(child.onExit(({ exitCode }) => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+        const sanitizedOutput = sanitizeAgyGenerationPtyOutput(output)
+        if (exitCode !== 0) {
+          reject(createExitError(exitCode, sanitizedOutput))
+          return
+        }
+
+        if (sanitizedOutput.length === 0) {
+          reject(createNoOutputError(sanitizedOutput))
+          return
+        }
+
+        request.onStdout?.(sanitizedOutput)
+        resolve({ stdout: sanitizedOutput, stderr: "" })
+      }))
     })
-    let stdout = ""
-    let stderr = ""
-    let settled = false
+  }
 
-    const cleanup = () => {
-      clearTimer(timeout)
-      request.abortSignal?.removeEventListener("abort", abort)
-    }
-
-    const fail = (error: Error) => {
-      if (settled) {
-        return
-      }
-
-      settled = true
-      cleanup()
-      reject(error)
-    }
-
-    const killAndFail = (error: Error) => {
-      child.kill("SIGTERM")
-      fail(error)
-    }
-
-    const timeout = setTimer(() => killAndFail(new AntigravityCliTimeoutError(invocation.options.timeoutMs)), invocation.options.timeoutMs)
-    const abort = () => killAndFail(createAbortError())
-
-    if (request.abortSignal?.aborted) {
-      abort()
-      return
-    }
-
-    request.abortSignal?.addEventListener("abort", abort, { once: true })
-
-    child.stdout.on("data", (chunk) => {
-      if (settled) {
-        return
-      }
-
-      const text = decodeChunk(chunk)
-      stdout += text
-      if (isInteractivePrompt(text) || isInteractivePrompt(stdout)) {
-        killAndFail(createInteractiveSetupError(text))
-        return
-      }
-
-      request.onStdout?.(text)
-    })
-
-    child.stderr.on("data", (chunk) => {
-      if (settled) {
-        return
-      }
-
-      const text = decodeChunk(chunk)
-      stderr += text
-      if (isInteractivePrompt(text) || isInteractivePrompt(stderr)) {
-        killAndFail(createInteractiveSetupError(text))
-      }
-    })
-
-    child.once("error", (error) => fail(new AntigravityCliProviderError(`Antigravity CLI failed to start. ${error.message}`, { cause: error })))
-
-    child.once("close", (code) => {
-      if (settled) {
-        return
-      }
-
-      settled = true
-      cleanup()
-      if (code === 0 && stdout.trim().length > 0) {
-        resolve({ stdout, stderr })
-        return
-      }
-
-      reject(code === 0 ? createNoOutputError(stderr) : createExitError(code, stderr))
-    })
-  })
+  return run()
 }
