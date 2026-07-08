@@ -85,7 +85,7 @@ const ptyAgyModelsOutput = `\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b
 // the last `\r`-separated segment (`.at(-1)`) drops the model line. Bare `\r`
 // must be treated as a line break so both fragments are evaluated, with the
 // spinner fragment then filtered out by `fetchingOrSpinnerPattern`.
-const ptyAgyModelsBareCrFixture = `\x1b[?25lFetching models...\r${actualAgyModelNames[0]}\r⠋ Fetching models...\rFetched 8 models\r\n${actualAgyModelNames[1]}\r\n${actualAgyModelNames[2]}\n${actualAgyModelNames[3]}\r\n${actualAgyModelNames[4]}\n${actualAgyModelNames[5]}\n${actualAgyModelNames[6]}\n${actualAgyModelNames[7]}\x1b[?25h\n`
+const ptyAgyModelsBareCrFixture = `\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H⠋ Fetching available models...\u001b]0;C:\\Users\\Origin\\AppData\\Local\\agy\\bin\\agy.exe\u0007\u001b[H\u001b[K${actualAgyModelNames[0]}\r⠋ Fetching available models...\rFetched 8 models\r\n\u001b[K${actualAgyModelNames[1]}\r\n${actualAgyModelNames[2]}\n${actualAgyModelNames[3]}\r\n${actualAgyModelNames[4]}\n${actualAgyModelNames[5]}\n${actualAgyModelNames[6]}\n${actualAgyModelNames[7]}\u001b[?25h\n`
 
 const withTempDirectory = (callback: (directory: string) => void) => {
   const directory = mkdtempSync(path.join(tmpdir(), "agy-resolve-"))
