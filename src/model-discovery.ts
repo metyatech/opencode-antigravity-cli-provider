@@ -156,16 +156,38 @@ const ansiCsiPattern = new RegExp(String.raw`\x1b\[[0-?]*[ -/]*[@-~]`, "g")
 const ansiOscPattern = new RegExp(String.raw`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`, "g")
 const controlResiduePattern = new RegExp(String.raw`[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]`, "g")
 const fetchingOrSpinnerPattern = /^(?:[|/\\\-◐◓◑◒⠁-⣿]\s*)?(?:fetching|fetched)\b/i
+// Cursor-home (CSI H) marks the start of a new visual frame on the same PTY
+// row. `agy models` uses `\x1b[H\x1b[K` to clear the spinner row before
+// writing the first model name, but it does NOT emit a `\r` or `\n` between
+// the spinner cycle and the model name. Splitting on cursor home isolates
+// each frame so the spinner filter can drop spinner frames without erasing
+// the model frame that follows on the same logical line.
+const cursorHomePattern = new RegExp(String.raw`\x1b\[H`, "g")
+// Screen-clear (`\x1b[2J`) and cursor-home-with-clear (`\x1b[H\x1b[2J`) also
+// reset the visible PTY state. They must never silently erase prior content.
+const screenClearPattern = new RegExp(String.raw`\x1b\[2J`, "g")
 
+// Bare `\r` is treated as a line break rather than an overwrite so a spinner
+// redraw on the same PTY row can never erase a model line that was emitted
+// before it. Spinner/fetching fragments produced by those redraws are dropped
+// by `fetchingOrSpinnerPattern` during sanitization.
 const normalizeCarriageReturns = (output: string) =>
   output
     .replace(/\r\n/g, "\n")
-    .split("\n")
-    .map((line) => line.split("\r").at(-1) ?? "")
-    .join("\n")
+    .replace(/\r/g, "\n")
 
 export const sanitizeAgyModelsPtyOutput = (output: string) => {
-  const stripped = normalizeCarriageReturns(output.replace(ansiOscPattern, "").replace(ansiCsiPattern, "").replace(new RegExp(String.raw`\x07`, "g"), ""))
+  const withoutOsc = output.replace(ansiOscPattern, "")
+  // Split into frames on cursor-home / screen-clear sequences BEFORE stripping
+  // remaining CSI escapes. Each frame is treated as a separate logical line,
+  // so spinner redraws and the trailing model row never share a single line.
+  const frameSeparator = new RegExp(`${cursorHomePattern.source}|${screenClearPattern.source}`, "g")
+  const frames = withoutOsc.split(frameSeparator)
+  const stripped = normalizeCarriageReturns(
+    frames
+      .map((frame) => frame.replace(ansiCsiPattern, "").replace(new RegExp(String.raw`\x07`, "g"), ""))
+      .join("\n"),
+  )
   return stripped
     .split("\n")
     .map((line) => line.replace(controlResiduePattern, "").trim())

@@ -80,6 +80,13 @@ const actualAgyModelsOutput = `${actualAgyModelNames.join("\n")}\n`
 
 const ptyAgyModelsOutput = `\x1b]0;Antigravity models\x07\x1b[?25lFetching models...\r⠋ Fetching models...\rFetched 8 models\r\n\x1b[2K${actualAgyModelNames[0]}\r\n${actualAgyModelNames[1]}\n\x1b[32m${actualAgyModelNames[2]}\x1b[0m\n${actualAgyModelNames[3]}\r\n${actualAgyModelNames[4]}\n\x1b[1A\x1b[2K${actualAgyModelNames[5]}\n${actualAgyModelNames[6]}\n\x07${actualAgyModelNames[7]}\x1b[?25h\n`
 
+// Regression: real `agy models` emits the first model line, then a spinner
+// redraws the same PTY row using a bare `\r`. A sanitizer that collapses to
+// the last `\r`-separated segment (`.at(-1)`) drops the model line. Bare `\r`
+// must be treated as a line break so both fragments are evaluated, with the
+// spinner fragment then filtered out by `fetchingOrSpinnerPattern`.
+const ptyAgyModelsBareCrFixture = `\x1b[?25lFetching models...\r${actualAgyModelNames[0]}\r⠋ Fetching models...\rFetched 8 models\r\n${actualAgyModelNames[1]}\r\n${actualAgyModelNames[2]}\n${actualAgyModelNames[3]}\r\n${actualAgyModelNames[4]}\n${actualAgyModelNames[5]}\n${actualAgyModelNames[6]}\n${actualAgyModelNames[7]}\x1b[?25h\n`
+
 const withTempDirectory = (callback: (directory: string) => void) => {
   const directory = mkdtempSync(path.join(tmpdir(), "agy-resolve-"))
   try {
@@ -127,6 +134,16 @@ describe("resolveAgyExecutable", () => {
 describe("sanitizeAgyModelsPtyOutput", () => {
   test("removes ANSI, OSC title, BEL, spinner/fetching lines, carriage returns, and residue", () => {
     expect(sanitizeAgyModelsPtyOutput(ptyAgyModelsOutput).split("\n")).toEqual(actualAgyModelNames)
+  })
+
+  test("preserves the first model line when a bare-CR spinner redraws the same PTY row", () => {
+    // Under the previous last-segment sanitizer, the first model line would
+    // be replaced by the trailing spinner fragment and dropped by the
+    // spinner filter. The new sanitizer splits bare `\r` into new lines so
+    // the model line is preserved and the spinner fragment is filtered out.
+    const sanitized = sanitizeAgyModelsPtyOutput(ptyAgyModelsBareCrFixture)
+    expect(sanitized.split("\n")).toEqual(actualAgyModelNames)
+    expect(sanitized).toContain("Gemini 3.5 Flash (Medium)")
   })
 })
 
@@ -212,6 +229,30 @@ describe("discoverAgyModels", () => {
       "claude-opus-4-6-thinking": "Claude Opus 4.6 (Thinking)",
       "gpt-oss-120b-medium": "GPT-OSS 120B (Medium)",
     })
+  })
+
+  test("preserves the first model line when bare-CR spinner redraws the same PTY row", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData(ptyAgyModelsBareCrFixture)
+        child.exit(0)
+      })
+    })
+
+    const result = await discoverAgyModels({ command: "fake-agy", timeoutMs: 1_000 }, { ptySpawn: fake.ptySpawn, platform: "linux" })
+
+    expect(result.discovered).toHaveLength(8)
+    expect(result.discovered.map((model) => model.id)).toEqual([
+      "gemini-3-5-flash-medium",
+      "gemini-3-5-flash-high",
+      "gemini-3-5-flash-low",
+      "gemini-3-1-pro-low",
+      "gemini-3-1-pro-high",
+      "claude-sonnet-4-6-thinking",
+      "claude-opus-4-6-thinking",
+      "gpt-oss-120b-medium",
+    ])
+    expect(result.modelMap["gemini-3-5-flash-medium"]).toBe("Gemini 3.5 Flash (Medium)")
   })
 
   test("fails fast on interactive prompts and kills the PTY child", async () => {
