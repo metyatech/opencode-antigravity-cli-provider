@@ -40,6 +40,8 @@ export type RunAgyCommandDependencies = {
   setTimeout?: AgySetTimeout
   clearTimeout?: AgyClearTimeout
   platform?: NodeJS.Platform
+  cancellationGraceMs?: number
+  cancellationForceCleanupMs?: number
 }
 
 export type RunAgyCommandRequest = {

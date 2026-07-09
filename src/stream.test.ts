@@ -9,6 +9,7 @@ class FakeAgyPty implements AgyPtyProcess {
   private dataListeners: Array<(data: string) => void> = []
   private exitListeners: Array<(event: AgyPtyExitEvent) => void> = []
   killSignals: Array<string | undefined> = []
+  writeCalls: string[] = []
 
   onData(listener: (data: string) => void): AgyPtyDisposable {
     this.dataListeners.push(listener)
@@ -23,6 +24,10 @@ class FakeAgyPty implements AgyPtyProcess {
   kill(signal?: string) {
     this.killSignals.push(signal)
     queueMicrotask(() => this.exit(1))
+  }
+
+  write(data: string) {
+    this.writeCalls.push(data)
   }
 
   writeData(data: string) {
@@ -56,6 +61,46 @@ const createFakePtySpawn = (schedule?: (child: FakeAgyPty) => void) => {
   }
 
   return { calls, ptySpawn }
+}
+
+type ManualTimer = ReturnType<typeof setTimeout> & {
+  handler: () => void
+  timeoutMs: number
+  cleared: boolean
+}
+
+const createManualTimers = () => {
+  const timers: ManualTimer[] = []
+  return {
+    setTimeout: (handler: () => void, timeoutMs: number) => {
+      const timer = { handler, timeoutMs, cleared: false } as ManualTimer
+      timers.push(timer)
+      return timer
+    },
+    clearTimeout: (timer: ReturnType<typeof setTimeout>) => {
+      const manualTimer = timer as ManualTimer
+      manualTimer.cleared = true
+    },
+    fire: (timeoutMs: number) => {
+      const timer = timers.find((candidate) => candidate.timeoutMs === timeoutMs && !candidate.cleared)
+      expect(timer).toBeDefined()
+      timer?.handler()
+    },
+  }
+}
+
+const expectPromisePending = async <T>(promise: Promise<T>) => {
+  let settled = false
+  promise.then(
+    () => {
+      settled = true
+    },
+    () => {
+      settled = true
+    },
+  )
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(settled).toBe(false)
 }
 
 const collectStream = async (stream: ReadableStream<LanguageModelV3StreamPart>) => {
@@ -176,12 +221,13 @@ describe("createAgyTextStream", () => {
     ).rejects.toThrow("Antigravity CLI failed with exit code 1. boom")
   })
 
-  test("kills the PTY child when the stream reader cancels", async () => {
+  test("requests cancellation before force killing when the stream reader cancels", async () => {
     let markSpawned: () => void = () => undefined
     const spawned = new Promise<void>((resolve) => {
       markSpawned = resolve
     })
     const fake = createFakePtySpawn(() => markSpawned())
+    const timers = createManualTimers()
     const stream = createAgyTextStream(
       {
         modelId: "gemini-3-5-flash-medium",
@@ -192,7 +238,13 @@ describe("createAgyTextStream", () => {
           modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
         },
       },
-      { ptySpawn: fake.ptySpawn, platform: "linux" },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        cancellationGraceMs: 25,
+      },
     )
     const reader = stream.getReader()
 
@@ -200,15 +252,20 @@ describe("createAgyTextStream", () => {
     await spawned
     await reader.cancel()
 
+    expect(fake.calls[0].child.writeCalls).toEqual(["\x03"])
+    expect(fake.calls[0].child.killSignals).toEqual([])
+    timers.fire(25)
     expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
+    fake.calls[0].child.exit(1)
   })
 
-  test("kills the PTY child when the request abort signal fires", async () => {
+  test("waits for PTY exit when the request abort signal fires", async () => {
     let markSpawned: () => void = () => undefined
     const spawned = new Promise<void>((resolve) => {
       markSpawned = resolve
     })
     const fake = createFakePtySpawn(() => markSpawned())
+    const timers = createManualTimers()
     const abortController = new AbortController()
     const stream = createAgyTextStream(
       {
@@ -221,7 +278,7 @@ describe("createAgyTextStream", () => {
         },
         abortSignal: abortController.signal,
       },
-      { ptySpawn: fake.ptySpawn, platform: "linux" },
+      { ptySpawn: fake.ptySpawn, platform: "linux", setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
     )
     const reader = stream.getReader()
 
@@ -229,7 +286,13 @@ describe("createAgyTextStream", () => {
     await spawned
     abortController.abort()
 
-    await expect(reader.read()).rejects.toThrow("Antigravity CLI call aborted.")
-    expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
+    const read = reader.read()
+    await expectPromisePending(read)
+    expect(fake.calls[0].child.writeCalls).toEqual(["\x03"])
+    expect(fake.calls[0].child.killSignals).toEqual([])
+
+    fake.calls[0].child.exit(1)
+
+    await expect(read).rejects.toThrow("Antigravity CLI call aborted.")
   })
 })

@@ -14,6 +14,21 @@ import type { AgyPtyDisposable, AgyPtyModule, AgyPtyProcess } from "./model-disc
 import type { AgyPromptTransport } from "./options"
 import type { AgyCommandInvocation, AgyCommandResult, RunAgyCommandDependencies, RunAgyCommandRequest } from "./types"
 
+type WritablePtySocket = {
+  closed?: boolean
+  destroyed?: boolean
+  writable?: boolean
+  writableEnded?: boolean
+  write?: (data: string) => void
+}
+
+type AgyPtyProcessWithInputSocket = AgyPtyProcess & {
+  _agent?: {
+    _inSocket?: WritablePtySocket
+    inSocket?: WritablePtySocket
+  }
+}
+
 const defaultLoadNodePty = async (): Promise<AgyPtyModule> => {
   const nodePty = await import("node-pty")
   return { spawn: nodePty.spawn }
@@ -54,6 +69,33 @@ export const buildAgyCommandInvocation = (request: RunAgyCommandRequest, promptT
     options,
     agyModel,
   }
+}
+
+const getWindowsInputSocket = (child: AgyPtyProcess) => {
+  const inputSocket = (child as AgyPtyProcessWithInputSocket)._agent?._inSocket ?? (child as AgyPtyProcessWithInputSocket)._agent?.inSocket
+  return inputSocket
+}
+
+const canWriteToSocket = (inputSocket: WritablePtySocket) =>
+  inputSocket.closed !== true && inputSocket.destroyed !== true && inputSocket.writableEnded !== true && inputSocket.writable !== false
+
+const writeCancellationInterrupt = (child: AgyPtyProcess, platform: NodeJS.Platform) => {
+  if (platform === "win32") {
+    const ptyChild = child as AgyPtyProcessWithInputSocket
+    if (ptyChild._agent?.inSocket !== undefined) {
+      return
+    }
+
+    const inputSocket = getWindowsInputSocket(child)
+    if (inputSocket?.write !== undefined) {
+      if (canWriteToSocket(inputSocket)) {
+        inputSocket.write("\x03")
+      }
+      return
+    }
+  }
+
+  child.write?.("\x03")
 }
 
 export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAgyCommandDependencies = {}) => {
@@ -97,13 +139,39 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
 
         let output = ""
         let settled = false
+        let cancellationRequested = false
+        let cancellationError: Error | undefined
+        let forceKillTimer: ReturnType<typeof setTimer> | undefined
+        let finalCleanupTimer: ReturnType<typeof setTimer> | undefined
+        let forceKillSent = false
         const disposables: AgyPtyDisposable[] = []
         let timeout: ReturnType<typeof setTimer> | undefined
 
-        const cleanup = () => {
+        const clearMainTimeout = () => {
           if (timeout !== undefined) {
             clearTimer(timeout)
+            timeout = undefined
           }
+        }
+
+        const clearForceKillTimer = () => {
+          if (forceKillTimer !== undefined) {
+            clearTimer(forceKillTimer)
+            forceKillTimer = undefined
+          }
+        }
+
+        const clearFinalCleanupTimer = () => {
+          if (finalCleanupTimer !== undefined) {
+            clearTimer(finalCleanupTimer)
+            finalCleanupTimer = undefined
+          }
+        }
+
+        const cleanup = () => {
+          clearMainTimeout()
+          clearForceKillTimer()
+          clearFinalCleanupTimer()
           request.abortSignal?.removeEventListener("abort", abort)
           releaseAgyPtyProcess(child, platform)
           for (const disposable of disposables) {
@@ -111,17 +179,12 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           }
         }
 
-        const fail = (error: Error) => {
-          if (settled) {
+        const forceKillChild = () => {
+          if (settled || forceKillSent) {
             return
           }
 
-          settled = true
-          cleanup()
-          reject(error)
-        }
-
-        const killChild = () => {
+          forceKillSent = true
           if (platform === "win32") {
             child.kill()
             return
@@ -130,20 +193,44 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           child.kill("SIGTERM")
         }
 
-        const killAndFail = (error: Error) => {
-          killChild()
-          fail(error)
+        const rejectAfterFinalCleanup = () => {
+          if (settled) {
+            return
+          }
+
+          settled = true
+          cleanup()
+          reject(cancellationError ?? new AntigravityCliProviderError("Antigravity CLI cancellation cleanup completed without a cancellation error."))
         }
 
-        timeout = setTimer(() => killAndFail(new AntigravityCliTimeoutError(invocation.options.timeoutMs)), invocation.options.timeoutMs)
-        const abort = () => killAndFail(createAbortError())
+        const requestCancellation = (error: Error) => {
+          if (settled) {
+            return
+          }
 
-        if (request.abortSignal?.aborted) {
-          abort()
-          return
+          clearMainTimeout()
+          if (!cancellationRequested) {
+            cancellationRequested = true
+            cancellationError = error
+            try {
+              writeCancellationInterrupt(child, platform)
+            } catch {
+              // Best-effort interrupt: fallback timers still enforce settlement.
+            }
+          }
+
+          forceKillTimer ??= setTimer(() => {
+            forceKillTimer = undefined
+            forceKillChild()
+          }, dependencies.cancellationGraceMs ?? 1_500)
+          finalCleanupTimer ??= setTimer(() => {
+            finalCleanupTimer = undefined
+            rejectAfterFinalCleanup()
+          }, dependencies.cancellationForceCleanupMs ?? 5_000)
         }
 
-        request.abortSignal?.addEventListener("abort", abort, { once: true })
+        timeout = setTimer(() => requestCancellation(new AntigravityCliTimeoutError(invocation.options.timeoutMs)), invocation.options.timeoutMs)
+        const abort = () => requestCancellation(createAbortError())
 
         disposables.push(child.onData((text) => {
           if (settled) {
@@ -152,7 +239,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
 
           output += text
           if (isInteractivePrompt(text) || isInteractivePrompt(output)) {
-            killAndFail(createInteractiveSetupError(sanitizeAgyGenerationPtyOutput(text)))
+            requestCancellation(createInteractiveSetupError(sanitizeAgyGenerationPtyOutput(text)))
           }
         }))
 
@@ -163,6 +250,11 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
 
           settled = true
           cleanup()
+          if (cancellationError !== undefined) {
+            reject(cancellationError)
+            return
+          }
+
           const sanitizedOutput = sanitizeAgyGenerationPtyOutput(output)
           if (exitCode !== 0) {
             reject(createExitError(exitCode, sanitizedOutput))
@@ -177,6 +269,11 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           request.onStdout?.(sanitizedOutput)
           resolve({ stdout: sanitizedOutput, stderr: "" })
         }))
+
+        request.abortSignal?.addEventListener("abort", abort, { once: true })
+        if (request.abortSignal?.aborted) {
+          abort()
+        }
       })
     } finally {
       await promptFileTransport.cleanup()

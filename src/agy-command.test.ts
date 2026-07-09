@@ -9,6 +9,8 @@ class FakeAgyPty implements AgyPtyProcess {
   private dataListeners: Array<(data: string) => void> = []
   private exitListeners: Array<(event: AgyPtyExitEvent) => void> = []
   killSignals: Array<string | undefined> = []
+  writeCalls: string[] = []
+  disposeEvents: string[] = []
   releaseEvents: string[] = []
   _agent = {
     _inSocket: { destroy: () => this.releaseEvents.push("in") },
@@ -18,17 +20,30 @@ class FakeAgyPty implements AgyPtyProcess {
 
   onData(listener: (data: string) => void): AgyPtyDisposable {
     this.dataListeners.push(listener)
-    return { dispose: () => this.removeDataListener(listener) }
+    return {
+      dispose: () => {
+        this.disposeEvents.push("data")
+        this.removeDataListener(listener)
+      },
+    }
   }
 
   onExit(listener: (event: AgyPtyExitEvent) => void): AgyPtyDisposable {
     this.exitListeners.push(listener)
-    return { dispose: () => this.removeExitListener(listener) }
+    return {
+      dispose: () => {
+        this.disposeEvents.push("exit")
+        this.removeExitListener(listener)
+      },
+    }
+  }
+
+  write(data: string) {
+    this.writeCalls.push(data)
   }
 
   kill(signal?: string) {
     this.killSignals.push(signal)
-    queueMicrotask(() => this.exit(1))
   }
 
   writeData(data: string) {
@@ -77,6 +92,54 @@ const withTempDirectory = async (callback: (directory: string) => Promise<void>)
 const generationFixture = "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[HOK\u001b]0;C:\\Users\\Origin\\AppData\\Local\\agy\\bin\\agy.exe\u0007\u001b[?25h\r\n"
 
 const listPromptTempDirs = () => new Set(readdirSync(tmpdir()).filter((entry) => entry.startsWith("opencode-antigravity-prompt-")))
+
+type ManualTimer = ReturnType<typeof setTimeout> & {
+  handler: () => void
+  timeoutMs: number
+  cleared: boolean
+}
+
+const createManualTimers = () => {
+  const timers: ManualTimer[] = []
+  return {
+    timers,
+    setTimeout: (handler: () => void, timeoutMs: number) => {
+      const timer = { handler, timeoutMs, cleared: false } as ManualTimer
+      timers.push(timer)
+      return timer
+    },
+    clearTimeout: (timer: ReturnType<typeof setTimeout>) => {
+      const manualTimer = timer as ManualTimer
+      manualTimer.cleared = true
+    },
+    fire: (timeoutMs: number) => {
+      const timer = timers.find((candidate) => candidate.timeoutMs === timeoutMs && !candidate.cleared)
+      expect(timer).toBeDefined()
+      timer?.handler()
+    },
+  }
+}
+
+const waitForSpawn = async (calls: Array<unknown>) => {
+  for (let attempt = 0; attempt < 10 && calls.length === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  expect(calls).toHaveLength(1)
+}
+
+const expectPromisePending = async <T>(promise: Promise<T>) => {
+  let settled = false
+  promise.then(
+    () => {
+      settled = true
+    },
+    () => {
+      settled = true
+    },
+  )
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(settled).toBe(false)
+}
 
 const getPromptTempDir = (args: string[]) => {
   const addDirIndex = args.indexOf("--add-dir")
@@ -319,34 +382,44 @@ describe("runAgyCommand", () => {
     expect(existsSync(tempDir)).toBe(false)
   })
 
-  test("fails fast on interactive prompts and kills the PTY child", async () => {
+  test("waits for PTY exit after interactive prompt cancellation", async () => {
     const prompt = "hello interactive"
     const fake = createFakePtySpawn((child) => {
       queueMicrotask(() => child.writeData("Please login to continue"))
     })
-
-    await expect(
-      runAgyCommand(
-        {
-          modelId: "gemini-3-5-flash-medium",
-          prompt,
-          options: {
-            command: "fake-agy",
-            timeoutMs: 1_000,
-            modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
-          },
+    const timers = createManualTimers()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt,
+        options: {
+          command: "./fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
         },
-        { ptySpawn: fake.ptySpawn, platform: "linux" },
-      ),
-    ).rejects.toThrow("Run `agy` directly to complete setup")
-    expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux", setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    )
+
+    await waitForSpawn(fake.calls)
     const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", prompt)
+    await expectPromisePending(run)
+    expect(fake.calls[0].child.writeCalls).toEqual(["\x03"])
+    expect(fake.calls[0].child.killSignals).toEqual([])
+    expect(fake.calls[0].child.disposeEvents).toEqual([])
+    expect(existsSync(tempDir)).toBe(true)
+
+    fake.calls[0].child.exit(1)
+
+    await expect(run).rejects.toThrow("Run `agy` directly to complete setup")
+    expect(fake.calls[0].child.disposeEvents).toEqual(["data", "exit"])
     expect(existsSync(tempDir)).toBe(false)
   })
 
-  test("kills the PTY child and reports the exact timeout message", async () => {
+  test("waits for PTY exit after timeout cancellation", async () => {
     const prompt = "hello timeout"
     const fake = createFakePtySpawn()
+    const timers = createManualTimers()
     const run = runAgyCommand(
       {
         modelId: "gemini-3-5-flash-medium",
@@ -360,23 +433,67 @@ describe("runAgyCommand", () => {
       {
         ptySpawn: fake.ptySpawn,
         platform: "win32",
-        setTimeout: (handler) => {
-          queueMicrotask(() => handler())
-          return setTimeout(() => undefined, 0)
-        },
-        clearTimeout: () => undefined,
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
       },
     )
 
-    await expect(run).rejects.toThrow("Antigravity CLI timed out after 1000ms.")
-    expect(fake.calls[0].child.killSignals).toEqual([undefined])
+    await waitForSpawn(fake.calls)
     const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", prompt)
+    timers.fire(1_000)
+    await expectPromisePending(run)
+    expect(fake.calls[0].child.writeCalls).toEqual(["\x03"])
+    expect(fake.calls[0].child.killSignals).toEqual([])
+    expect(fake.calls[0].child.releaseEvents).toEqual([])
+    expect(existsSync(tempDir)).toBe(true)
+
+    fake.calls[0].child.exit(1)
+
+    await expect(run).rejects.toThrow("Antigravity CLI timed out after 1000ms.")
+    expect(fake.calls[0].child.releaseEvents).toEqual(["in", "out", "worker"])
     expect(existsSync(tempDir)).toBe(false)
   })
 
-  test("kills the PTY child and raises AbortError on abort", async () => {
+  test("waits for PTY exit after abort cancellation", async () => {
     const prompt = "hello abort"
     const fake = createFakePtySpawn()
+    const timers = createManualTimers()
+    const abortController = new AbortController()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt,
+        options: {
+          command: "./fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        abortSignal: abortController.signal,
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux", setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    )
+
+    await waitForSpawn(fake.calls)
+    const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", prompt)
+    abortController.abort()
+
+    await expectPromisePending(run)
+    expect(fake.calls[0].child.writeCalls).toEqual(["\x03"])
+    expect(fake.calls[0].child.killSignals).toEqual([])
+    expect(fake.calls[0].child.disposeEvents).toEqual([])
+    expect(existsSync(tempDir)).toBe(true)
+
+    fake.calls[0].child.exit(1)
+
+    await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
+    expect(fake.calls[0].child.disposeEvents).toEqual(["data", "exit"])
+    expect(existsSync(tempDir)).toBe(false)
+  })
+
+  test("force kills after cancellation grace without rejecting before PTY exit", async () => {
+    const prompt = "hello force kill"
+    const fake = createFakePtySpawn()
+    const timers = createManualTimers()
     const abortController = new AbortController()
     const run = runAgyCommand(
       {
@@ -389,15 +506,102 @@ describe("runAgyCommand", () => {
         },
         abortSignal: abortController.signal,
       },
-      { ptySpawn: fake.ptySpawn, platform: "linux" },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        cancellationGraceMs: 25,
+        cancellationForceCleanupMs: 100,
+      },
     )
 
+    await waitForSpawn(fake.calls)
     abortController.abort()
+    timers.fire(25)
+
+    await expectPromisePending(run)
+    expect(fake.calls[0].child.writeCalls).toEqual(["\x03"])
+    expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
+    expect(fake.calls[0].child.disposeEvents).toEqual([])
+
+    fake.calls[0].child.exit(1)
+
+    await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
+    expect(fake.calls[0].child.disposeEvents).toEqual(["data", "exit"])
+  })
+
+  test("final cleanup fallback rejects cancellation when PTY exit never arrives", async () => {
+    const prompt = "hello final cleanup"
+    const fake = createFakePtySpawn()
+    const timers = createManualTimers()
+    const abortController = new AbortController()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt,
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        abortSignal: abortController.signal,
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        cancellationGraceMs: 25,
+        cancellationForceCleanupMs: 100,
+      },
+    )
+
+    await waitForSpawn(fake.calls)
+    const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", prompt)
+    abortController.abort()
+    timers.fire(25)
+    await expectPromisePending(run)
+    expect(existsSync(tempDir)).toBe(true)
+
+    timers.fire(100)
 
     await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
     expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
-    const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", prompt)
+    expect(fake.calls[0].child.disposeEvents).toEqual(["data", "exit"])
     expect(existsSync(tempDir)).toBe(false)
+  })
+
+  test("releases Windows agent resources once after canceling and receiving PTY exit", async () => {
+    const prompt = "hello windows release"
+    const fake = createFakePtySpawn()
+    const timers = createManualTimers()
+    const abortController = new AbortController()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt,
+        options: {
+          command: "./fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        abortSignal: abortController.signal,
+      },
+      { ptySpawn: fake.ptySpawn, platform: "win32", setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    )
+
+    await waitForSpawn(fake.calls)
+    abortController.abort()
+
+    await expectPromisePending(run)
+    expect(fake.calls[0].child.writeCalls).toEqual(["\x03"])
+    expect(fake.calls[0].child.releaseEvents).toEqual([])
+
+    fake.calls[0].child.exit(1)
+
+    await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
+    expect(fake.calls[0].child.releaseEvents).toEqual(["in", "out", "worker"])
   })
 
   test("cleans up the prompt temp directory when PTY spawn fails", async () => {
