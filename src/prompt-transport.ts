@@ -15,36 +15,57 @@ const buildWrapperPrompt = (promptFile: string) =>
 
 const isNotFoundError = (error: unknown) => typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT"
 
-const verifyRemoved = async (tempDir: string) => {
-  try {
-    await fs.stat(tempDir)
-  } catch (error) {
-    if (isNotFoundError(error)) {
-      return
-    }
-
-    throw error
-  }
-
-  throw new Error(`Prompt temp directory still exists after cleanup attempt: ${tempDir}`)
+const logCleanupWarning = (tempDir: string, error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error)
+  // Best-effort cleanup: never throw to the caller, otherwise the primary CLI
+  // result/error would be masked by a transient filesystem lock during
+  // cancellation. The temp directory may be left on disk for the OS to sweep
+  // later if Windows still holds a handle via the just-exited agy child.
+  console.warn(`opencode-antigravity-cli-provider: failed to remove prompt temp directory ${tempDir}: ${message}`)
 }
 
 const removeTempDir = async (tempDir: string) => {
-  let lastError: unknown
   for (let attempt = 1; attempt <= 20; attempt += 1) {
     try {
       await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
-      await verifyRemoved(tempDir)
-      return
     } catch (error) {
-      lastError = error
+      if (isNotFoundError(error)) {
+        return
+      }
+
       if (attempt < 20) {
         await delay(250)
+        continue
       }
-    }
-  }
 
-  throw lastError
+      logCleanupWarning(tempDir, error)
+      return
+    }
+
+    try {
+      await fs.stat(tempDir)
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        return
+      }
+
+      if (attempt < 20) {
+        await delay(250)
+        continue
+      }
+
+      logCleanupWarning(tempDir, error)
+      return
+    }
+
+    if (attempt < 20) {
+      await delay(250)
+      continue
+    }
+
+    logCleanupWarning(tempDir, new Error(`Prompt temp directory still exists after cleanup attempt: ${tempDir}`))
+    return
+  }
 }
 
 export const createPromptFileTransport = async (prompt: string): Promise<PromptFileTransport> => {

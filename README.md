@@ -192,6 +192,8 @@ Example with supported options:
   only for the short wrapper prompt that points to the exact generated
   `prompt.txt`. Temp prompt directories and files are removed on a best-effort
   basis after success, failure, timeout, or abort.
+- Stream cancellation waits for the underlying CLI cancellation cleanup when the
+  caller awaits `ReadableStream` cancellation.
 
 ## Safety model
 
