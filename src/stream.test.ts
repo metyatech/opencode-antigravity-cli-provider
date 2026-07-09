@@ -84,9 +84,11 @@ const expectWrapperPrompt = (args: string[], promptBody: string) => {
   const promptFile = path.join(tempDir, "prompt.txt")
 
   expect(wrapperPrompt).toContain(promptFile)
-  expect(wrapperPrompt).toContain("complete OpenCode conversation/user request")
-  expect(wrapperPrompt).toContain("do not summarize unless requested")
+  expect(wrapperPrompt).toContain(`Read the prompt file at '${promptFile}'`)
+  expect(wrapperPrompt).toContain("answer the request written in that file")
+  expect(wrapperPrompt).toContain("file contents as the user's full request")
   expect(wrapperPrompt).toContain("Return only the final answer")
+  expect(wrapperPrompt).toContain("Do not summarize or echo the file unless it asks for that")
   expect(wrapperPrompt).not.toContain(promptBody)
   expect(JSON.stringify(args)).not.toContain(promptBody)
 
