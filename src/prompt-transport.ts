@@ -9,6 +9,9 @@ export type PromptFileTransport = {
   cleanup: () => Promise<void>
 }
 
+const buildWrapperPrompt = (promptFile: string) =>
+  `Read this exact file: ${promptFile}. Treat its contents as the complete OpenCode conversation/user request. Follow it; do not summarize unless requested. Return only the final answer.`
+
 export const createPromptFileTransport = async (prompt: string): Promise<PromptFileTransport> => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-antigravity-prompt-"))
   const promptFile = path.join(tempDir, "prompt.txt")
@@ -36,7 +39,7 @@ export const createPromptFileTransport = async (prompt: string): Promise<PromptF
   return {
     tempDir,
     promptFile,
-    wrapperPrompt: "Read prompt.txt from the added directory and follow it exactly.",
+    wrapperPrompt: buildWrapperPrompt(promptFile),
     cleanup,
   }
 }

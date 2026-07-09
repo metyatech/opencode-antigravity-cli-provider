@@ -85,16 +85,25 @@ const getPromptTempDir = (args: string[]) => {
 const expectFilePromptArgs = (args: string[], agyModel: string, longPrompt: string) => {
   const tempDir = getPromptTempDir(args)
   const promptIndex = args.indexOf("-p")
+  const promptFile = path.join(tempDir, "prompt.txt")
+  const wrapperPrompt = args[promptIndex + 1]
 
   expect(args).toContain("--add-dir")
   expect(args).toContain("--model")
   expect(args[args.indexOf("--model") + 1]).toBe(agyModel)
   expect(promptIndex).toBeGreaterThanOrEqual(0)
-  expect(args[promptIndex + 1]).toBe("Read prompt.txt from the added directory and follow it exactly.")
+  expect(wrapperPrompt).toContain(promptFile)
+  expect(wrapperPrompt).toContain("Read this exact file")
+  expect(wrapperPrompt).toContain("complete OpenCode conversation/user request")
+  expect(wrapperPrompt).toContain("do not summarize unless requested")
+  expect(wrapperPrompt).toContain("Return only the final answer")
+  expect(wrapperPrompt.length).toBeLessThan(promptFile.length + 200)
+  expect(wrapperPrompt).not.toContain(longPrompt)
   expect(args).not.toContain(longPrompt)
+  expect(JSON.stringify(args)).not.toContain(longPrompt)
   expect(args).not.toContain("--prompt-file")
   expect(args).not.toContain("@prompt.txt")
-  expect(path.basename(path.join(tempDir, "prompt.txt"))).toBe("prompt.txt")
+  expect(path.basename(promptFile)).toBe("prompt.txt")
 
   return tempDir
 }
@@ -167,7 +176,7 @@ describe("buildAgyCommandInvocation", () => {
 describe("runAgyCommand", () => {
   test("spawns the resolved command through PTY and returns final sanitized output", async () => {
     const onStdoutChunks: string[] = []
-    const longPrompt = "hello".repeat(10_000)
+    const longPrompt = "hello".repeat(20_000)
     let promptFileContent = ""
     const fake = createFakePtySpawn((child, call) => {
       queueMicrotask(() => {
@@ -202,6 +211,10 @@ describe("runAgyCommand", () => {
     expect(fake.calls[0].options).toMatchObject({ name: "xterm-color", cols: 120, rows: 30, cwd: "." })
     expect(fake.calls[0].options.env.AGY_TEST_ENV).toBe("1")
     const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", longPrompt)
+    const wrapperPrompt = fake.calls[0].args[fake.calls[0].args.indexOf("-p") + 1]
+    expect(JSON.stringify(fake.calls[0].args)).not.toContain(longPrompt)
+    expect(wrapperPrompt).not.toContain(longPrompt)
+    expect(wrapperPrompt).not.toContain("hello".repeat(1_000))
     expect(existsSync(tempDir)).toBe(false)
   })
 

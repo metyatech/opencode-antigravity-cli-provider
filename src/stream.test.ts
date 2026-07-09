@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
+import path from "node:path"
 import { createAgyTextStream } from "./stream"
 import type { AgyPtyDisposable, AgyPtyExitEvent, AgyPtyProcess, AgyPtySpawn, AgyPtySpawnOptions } from "./model-discovery"
 import type { LanguageModelV3StreamPart } from "./types"
@@ -77,6 +78,21 @@ const getPromptTempDir = (args: string[]) => {
   return args[addDirIndex + 1]
 }
 
+const expectWrapperPrompt = (args: string[], promptBody: string) => {
+  const tempDir = getPromptTempDir(args)
+  const wrapperPrompt = args.at(-1)
+  const promptFile = path.join(tempDir, "prompt.txt")
+
+  expect(wrapperPrompt).toContain(promptFile)
+  expect(wrapperPrompt).toContain("complete OpenCode conversation/user request")
+  expect(wrapperPrompt).toContain("do not summarize unless requested")
+  expect(wrapperPrompt).toContain("Return only the final answer")
+  expect(wrapperPrompt).not.toContain(promptBody)
+  expect(JSON.stringify(args)).not.toContain(promptBody)
+
+  return tempDir
+}
+
 describe("createAgyTextStream", () => {
   test("emits the final sanitized PTY output as one text delta and finishes", async () => {
     const fake = createFakePtySpawn((child) => {
@@ -105,9 +121,7 @@ describe("createAgyTextStream", () => {
     expect(parts.filter((part) => part.type === "text-delta").map((part) => part.delta)).toEqual(["OK"])
     expect(parts.at(-1)).toMatchObject({ type: "finish", finishReason: { unified: "stop", raw: undefined } })
     expect(fake.calls[0].options.name).toBe("xterm-color")
-    expect(fake.calls[0].args.join("\n")).not.toContain("hello")
-    expect(fake.calls[0].args.at(-1)).toBe("Read prompt.txt from the added directory and follow it exactly.")
-    expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
+    expect(existsSync(expectWrapperPrompt(fake.calls[0].args, "hello"))).toBe(false)
     expect(fake.calls[0].args[fake.calls[0].args.indexOf("--model") + 1]).toBe("Gemini 3.5 Flash (Medium)")
   })
 

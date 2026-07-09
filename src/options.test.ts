@@ -74,6 +74,24 @@ describe("buildAgyArgs", () => {
     ])
   })
 
+  test("file transport excludes long prompt bodies from agy arguments", () => {
+    const longPrompt = `LONG_PROMPT_BODY_${"x".repeat(100_000)}`
+    const wrapperPrompt = "Read this exact file: /tmp/opencode-antigravity-prompt-abc/prompt.txt. Return only the final answer."
+    const args = buildAgyArgs(["--verbose"], "exact-agy-model", {
+      type: "file",
+      tempDir: "/tmp/opencode-antigravity-prompt-abc",
+      wrapperPrompt,
+    })
+
+    expect(args).toContain("--add-dir")
+    expect(args).toContain("-p")
+    expect(args[args.indexOf("-p") + 1]).toBe(wrapperPrompt)
+    expect(args[args.indexOf("-p") + 1]).toContain("/tmp/opencode-antigravity-prompt-abc/prompt.txt")
+    expect(args[args.indexOf("-p") + 1].length).toBeLessThan(512)
+    expect(JSON.stringify(args)).not.toContain(longPrompt)
+    expect(JSON.stringify(args)).not.toContain("LONG_PROMPT_BODY_")
+  })
+
   test("direct transport preserves legacy prompt args for tests and future callers", () => {
     expect(buildAgyArgs(["--verbose"], "exact-agy-model", { type: "direct", prompt: "hello" })).toEqual(["--verbose", "--model", "exact-agy-model", "-p", "hello"])
   })

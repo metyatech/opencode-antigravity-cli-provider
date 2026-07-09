@@ -36,10 +36,12 @@ model names. Discovery uses a PTY because pipe-based execution can hang or never
 emit the model list for this CLI. Generation also uses `node-pty` and avoids
 putting the full rendered prompt on the command line: the provider writes the
 prompt to an OS-temp UTF-8 `prompt.txt`, passes that temp directory with the
-official `--add-dir`, and sends only a short wrapper prompt with `-p`. This
-mitigates Windows error 206 (`The filename or extension is too long`) for long
-OpenCode prompts. It auto-injects the `antigravity-cli` provider only if
-`provider["antigravity-cli"]` is absent and discovery returns at least one model.
+official `--add-dir`, and sends only a short wrapper prompt with `-p` that
+names the exact generated `prompt.txt` path instead of embedding the prompt
+body. This mitigates Windows error 206 (`The filename or extension is too
+long`) for long OpenCode prompts. It auto-injects the `antigravity-cli`
+provider only if `provider["antigravity-cli"]` is absent and discovery returns
+at least one model.
 It does NOT change your top-level default `model` unless you explicitly pass the
 plugin `model` option with a discovered slug.
 
@@ -187,8 +189,9 @@ Example with supported options:
   text is returned.
 - Each generation request is a fresh PTY invocation that passes the exact model
   display name, adds a temp prompt directory with `--add-dir`, and uses `-p`
-  only for the short wrapper prompt. The temp directory is removed after the
-  request finishes or fails.
+  only for the short wrapper prompt that points to the exact generated
+  `prompt.txt`. The temp directory is removed after the request finishes or
+  fails.
 
 ## Safety model
 
