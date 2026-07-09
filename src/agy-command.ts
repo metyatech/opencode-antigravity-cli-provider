@@ -34,6 +34,50 @@ const defaultLoadNodePty = async (): Promise<AgyPtyModule> => {
   return { spawn: nodePty.spawn }
 }
 
+const inheritedEnvBlocklistPrefixes = ["AGENT", "OPENCODE"]
+
+const shouldInheritEnvKey = (key: string) => {
+  const normalized = key.toUpperCase()
+  return !inheritedEnvBlocklistPrefixes.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}_`))
+}
+
+const createAgyProcessEnv = (overrides: Record<string, string>) => ({
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => shouldInheritEnvKey(key))),
+  ...overrides,
+})
+
+const getNodeExecutableForPtyHelper = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform) => {
+  if (platform !== "win32" || process.execPath.toLowerCase().endsWith("node.exe")) {
+    return undefined
+  }
+
+  try {
+    return resolveAgyExecutable("node", env, platform)
+  } catch {
+    return undefined
+  }
+}
+
+const runWithNodeExecPathForPtyHelper = (nodeExecutable: string | undefined, callback: () => void) => {
+  if (nodeExecutable === undefined) {
+    callback()
+    return
+  }
+
+  const originalDescriptor = Object.getOwnPropertyDescriptor(process, "execPath")
+  const originalExecPath = process.execPath
+  try {
+    Object.defineProperty(process, "execPath", { configurable: true, value: nodeExecutable, writable: true })
+    callback()
+  } finally {
+    if (originalDescriptor !== undefined) {
+      Object.defineProperty(process, "execPath", originalDescriptor)
+    } else {
+      Object.defineProperty(process, "execPath", { configurable: true, value: originalExecPath, writable: true })
+    }
+  }
+}
+
 const ansiCsiPattern = new RegExp(String.raw`\x1b\[[0-?]*[ -/]*[@-~]`, "g")
 const ansiOscPattern = new RegExp(String.raw`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`, "g")
 const belPattern = new RegExp(String.raw`\x07`, "g")
@@ -119,8 +163,9 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
       const setTimer = dependencies.setTimeout ?? ((handler, timeoutMs) => setTimeout(handler, timeoutMs))
       const clearTimer = dependencies.clearTimeout ?? ((timer) => clearTimeout(timer))
       const platform = dependencies.platform ?? process.platform
-      const env = { ...process.env, ...invocation.options.env }
+      const env = createAgyProcessEnv(invocation.options.env)
       const resolvedCommand = resolveAgyExecutable(invocation.command, env, platform)
+      const nodeExecutableForPtyHelper = getNodeExecutableForPtyHelper(env, platform)
 
       return await new Promise<AgyCommandResult>((resolve, reject) => {
         let child: AgyPtyProcess
@@ -186,7 +231,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
 
           forceKillSent = true
           if (platform === "win32") {
-            child.kill()
+            runWithNodeExecPathForPtyHelper(nodeExecutableForPtyHelper, () => child.kill())
             return
           }
 

@@ -7,22 +7,36 @@ const textStreamId = "antigravity-cli-text"
 export const createAgyTextStream = (request: RunAgyCommandRequest, dependencies: RunAgyCommandDependencies = {}) => {
   let abortController: AbortController | undefined
   let removeAbortListener: () => void = () => undefined
+  let runPromise: Promise<unknown> | undefined
+  let streamCancelled = false
 
   return new ReadableStream<LanguageModelV3StreamPart>({
     start(controller) {
       abortController = new AbortController()
       let textStarted = false
+      let abortListenerRemoved = false
 
       const abort = () => abortController?.abort()
       request.abortSignal?.addEventListener("abort", abort, { once: true })
-      removeAbortListener = () => request.abortSignal?.removeEventListener("abort", abort)
+      removeAbortListener = () => {
+        if (abortListenerRemoved) {
+          return
+        }
+
+        abortListenerRemoved = true
+        request.abortSignal?.removeEventListener("abort", abort)
+      }
       controller.enqueue({ type: "stream-start", warnings: APPROXIMATION_WARNINGS })
 
-      void runAgyCommand(
+      const commandPromise = runAgyCommand(
         {
           ...request,
           abortSignal: abortController.signal,
           onStdout: (chunk) => {
+            if (streamCancelled) {
+              return
+            }
+
             if (!textStarted) {
               textStarted = true
               controller.enqueue({ type: "text-start", id: textStreamId })
@@ -34,8 +48,14 @@ export const createAgyTextStream = (request: RunAgyCommandRequest, dependencies:
         },
         dependencies,
       )
+      runPromise = commandPromise
+      void commandPromise
         .then(() => {
           removeAbortListener()
+          if (streamCancelled) {
+            return
+          }
+
           if (textStarted) {
             controller.enqueue({ type: "text-end", id: textStreamId })
           }
@@ -45,12 +65,21 @@ export const createAgyTextStream = (request: RunAgyCommandRequest, dependencies:
         })
         .catch((error: unknown) => {
           removeAbortListener()
+          if (streamCancelled) {
+            return
+          }
+
           controller.error(error)
         })
     },
     cancel() {
+      streamCancelled = true
       removeAbortListener()
       abortController?.abort()
+      return runPromise?.then(
+        () => undefined,
+        () => undefined,
+      )
     },
   })
 }

@@ -23,7 +23,6 @@ class FakeAgyPty implements AgyPtyProcess {
 
   kill(signal?: string) {
     this.killSignals.push(signal)
-    queueMicrotask(() => this.exit(1))
   }
 
   write(data: string) {
@@ -174,7 +173,10 @@ describe("createAgyTextStream", () => {
 
   test("propagates interactive setup errors", async () => {
     const fake = createFakePtySpawn((child) => {
-      queueMicrotask(() => child.writeData("Permission required before use"))
+      queueMicrotask(() => {
+        child.writeData("Permission required before use")
+        child.exit(1)
+      })
     })
 
     await expect(
@@ -221,7 +223,7 @@ describe("createAgyTextStream", () => {
     ).rejects.toThrow("Antigravity CLI failed with exit code 1. boom")
   })
 
-  test("requests cancellation before force killing when the stream reader cancels", async () => {
+  test("reader.cancel waits for child exit and cleanup after requesting cancellation", async () => {
     let markSpawned: () => void = () => undefined
     const spawned = new Promise<void>((resolve) => {
       markSpawned = resolve
@@ -250,13 +252,143 @@ describe("createAgyTextStream", () => {
 
     await reader.read()
     await spawned
-    await reader.cancel()
+    const tempDir = getPromptTempDir(fake.calls[0].args)
+    const cancelPromise = reader.cancel()
 
+    await expectPromisePending(cancelPromise)
     expect(fake.calls[0].child.writeCalls).toEqual(["\x03"])
     expect(fake.calls[0].child.killSignals).toEqual([])
+    expect(existsSync(tempDir)).toBe(true)
     timers.fire(25)
     expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
+    await expectPromisePending(cancelPromise)
     fake.calls[0].child.exit(1)
+    await expect(cancelPromise).resolves.toBeUndefined()
+    expect(existsSync(tempDir)).toBe(false)
+  })
+
+  test("cancel after child exit resolves without unhandled rejection", async () => {
+    let markSpawned: () => void = () => undefined
+    const spawned = new Promise<void>((resolve) => {
+      markSpawned = resolve
+    })
+    const fake = createFakePtySpawn(() => markSpawned())
+    const unhandledRejections: unknown[] = []
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason)
+    }
+    process.on("unhandledRejection", onUnhandledRejection)
+
+    try {
+      const stream = createAgyTextStream(
+        {
+          modelId: "gemini-3-5-flash-medium",
+          prompt: "hello",
+          options: {
+            command: "fake-agy",
+            timeoutMs: 1_000,
+            modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+          },
+        },
+        { ptySpawn: fake.ptySpawn, platform: "linux" },
+      )
+      const reader = stream.getReader()
+
+      await reader.read()
+      await spawned
+      fake.calls[0].child.exit(1)
+      await expect(reader.cancel()).resolves.toBeUndefined()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(unhandledRejections).toEqual([])
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection)
+    }
+  })
+
+  test("keeps prompt temp dir until stream cancel cleanup settles", async () => {
+    let markSpawned: () => void = () => undefined
+    const spawned = new Promise<void>((resolve) => {
+      markSpawned = resolve
+    })
+    const fake = createFakePtySpawn(() => markSpawned())
+    const timers = createManualTimers()
+    const stream = createAgyTextStream(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello temp cleanup",
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        cancellationGraceMs: 25,
+      },
+    )
+    const reader = stream.getReader()
+
+    await reader.read()
+    await spawned
+    const tempDir = getPromptTempDir(fake.calls[0].args)
+    const cancelPromise = reader.cancel()
+
+    await expectPromisePending(cancelPromise)
+    expect(existsSync(tempDir)).toBe(true)
+    timers.fire(25)
+    fake.calls[0].child.exit(1)
+
+    await expect(cancelPromise).resolves.toBeUndefined()
+    expect(existsSync(tempDir)).toBe(false)
+  })
+
+  test("final cleanup fallback resolves stream cancel and removes prompt temp dir", async () => {
+    let markSpawned: () => void = () => undefined
+    const spawned = new Promise<void>((resolve) => {
+      markSpawned = resolve
+    })
+    const fake = createFakePtySpawn(() => markSpawned())
+    const timers = createManualTimers()
+    const stream = createAgyTextStream(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello final cleanup",
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        cancellationGraceMs: 25,
+        cancellationForceCleanupMs: 100,
+      },
+    )
+    const reader = stream.getReader()
+
+    await reader.read()
+    await spawned
+    const tempDir = getPromptTempDir(fake.calls[0].args)
+    const cancelPromise = reader.cancel()
+
+    timers.fire(25)
+    await expectPromisePending(cancelPromise)
+    expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
+    expect(existsSync(tempDir)).toBe(true)
+
+    timers.fire(100)
+
+    await expect(cancelPromise).resolves.toBeUndefined()
+    expect(existsSync(tempDir)).toBe(false)
   })
 
   test("waits for PTY exit when the request abort signal fires", async () => {
