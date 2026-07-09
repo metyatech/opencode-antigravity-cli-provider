@@ -190,8 +190,8 @@ Example with supported options:
 - Each generation request is a fresh PTY invocation that passes the exact model
   display name, adds a temp prompt directory with `--add-dir`, and uses `-p`
   only for the short wrapper prompt that points to the exact generated
-  `prompt.txt`. The temp directory is removed after the request finishes or
-  fails.
+  `prompt.txt`. Temp prompt directories and files are removed on a best-effort
+  basis after success, failure, timeout, or abort.
 
 ## Safety model
 

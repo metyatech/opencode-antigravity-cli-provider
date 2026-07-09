@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { buildAgyCommandInvocation, runAgyCommand, sanitizeAgyGenerationPtyOutput } from "./agy-command"
@@ -75,6 +75,8 @@ const withTempDirectory = async (callback: (directory: string) => Promise<void>)
 }
 
 const generationFixture = "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[HOK\u001b]0;C:\\Users\\Origin\\AppData\\Local\\agy\\bin\\agy.exe\u0007\u001b[?25h\r\n"
+
+const listPromptTempDirs = () => new Set(readdirSync(tmpdir()).filter((entry) => entry.startsWith("opencode-antigravity-prompt-")))
 
 const getPromptTempDir = (args: string[]) => {
   const addDirIndex = args.indexOf("--add-dir")
@@ -423,5 +425,32 @@ describe("runAgyCommand", () => {
 
     const tempDir = expectFilePromptArgs(args, "Gemini 3.5 Flash (Medium)", prompt)
     expect(existsSync(tempDir)).toBe(false)
+  })
+
+  test("cleans up the prompt temp directory when loading node-pty fails", async () => {
+    const promptTempDirsBefore = listPromptTempDirs()
+
+    await expect(
+      runAgyCommand(
+        {
+          modelId: "gemini-3-5-flash-medium",
+          prompt: "hello node-pty load failure",
+          options: {
+            command: "fake-agy",
+            timeoutMs: 1_000,
+            modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+          },
+        },
+        {
+          loadNodePty: async () => {
+            throw new Error("node-pty import exploded")
+          },
+          platform: "linux",
+        },
+      ),
+    ).rejects.toThrow("node-pty import exploded")
+
+    const promptTempDirsAfter = listPromptTempDirs()
+    expect([...promptTempDirsAfter].filter((entry) => !promptTempDirsBefore.has(entry))).toEqual([])
   })
 })

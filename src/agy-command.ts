@@ -71,15 +71,15 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
       options,
       agyModel,
     }
-    const loadNodePty = dependencies.loadNodePty ?? defaultLoadNodePty
-    const ptySpawn = dependencies.ptySpawn ?? (await loadNodePty()).spawn
-    const setTimer = dependencies.setTimeout ?? ((handler, timeoutMs) => setTimeout(handler, timeoutMs))
-    const clearTimer = dependencies.clearTimeout ?? ((timer) => clearTimeout(timer))
-    const platform = dependencies.platform ?? process.platform
-    const env = { ...process.env, ...invocation.options.env }
-    const resolvedCommand = resolveAgyExecutable(invocation.command, env, platform)
-
     try {
+      const loadNodePty = dependencies.loadNodePty ?? defaultLoadNodePty
+      const ptySpawn = dependencies.ptySpawn ?? (await loadNodePty()).spawn
+      const setTimer = dependencies.setTimeout ?? ((handler, timeoutMs) => setTimeout(handler, timeoutMs))
+      const clearTimer = dependencies.clearTimeout ?? ((timer) => clearTimeout(timer))
+      const platform = dependencies.platform ?? process.platform
+      const env = { ...process.env, ...invocation.options.env }
+      const resolvedCommand = resolveAgyExecutable(invocation.command, env, platform)
+
       return await new Promise<AgyCommandResult>((resolve, reject) => {
         let child: AgyPtyProcess
         try {
