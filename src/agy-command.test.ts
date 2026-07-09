@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { buildAgyCommandInvocation, runAgyCommand, sanitizeAgyGenerationPtyOutput } from "./agy-command"
@@ -9,6 +9,12 @@ class FakeAgyPty implements AgyPtyProcess {
   private dataListeners: Array<(data: string) => void> = []
   private exitListeners: Array<(event: AgyPtyExitEvent) => void> = []
   killSignals: Array<string | undefined> = []
+  releaseEvents: string[] = []
+  _agent = {
+    _inSocket: { destroy: () => this.releaseEvents.push("in") },
+    _outSocket: { destroy: () => this.releaseEvents.push("out") },
+    _conoutSocketWorker: { dispose: () => this.releaseEvents.push("worker") },
+  }
 
   onData(listener: (data: string) => void): AgyPtyDisposable {
     this.dataListeners.push(listener)
@@ -46,28 +52,52 @@ class FakeAgyPty implements AgyPtyProcess {
   }
 }
 
-const createFakePtySpawn = (schedule?: (child: FakeAgyPty) => void) => {
+const createFakePtySpawn = (schedule?: (child: FakeAgyPty, call: { command: string; args: string[]; options: AgyPtySpawnOptions; child: FakeAgyPty }) => void) => {
   const calls: Array<{ command: string; args: string[]; options: AgyPtySpawnOptions; child: FakeAgyPty }> = []
   const ptySpawn: AgyPtySpawn = (command, args, options) => {
     const child = new FakeAgyPty()
-    calls.push({ command, args, options, child })
-    schedule?.(child)
+    const call = { command, args, options, child }
+    calls.push(call)
+    schedule?.(child, call)
     return child
   }
 
   return { calls, ptySpawn }
 }
 
-const withTempDirectory = (callback: (directory: string) => void) => {
+const withTempDirectory = async (callback: (directory: string) => Promise<void>) => {
   const directory = mkdtempSync(path.join(tmpdir(), "agy-generation-resolve-"))
   try {
-    callback(directory)
+    await callback(directory)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
 }
 
 const generationFixture = "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[HOK\u001b]0;C:\\Users\\Origin\\AppData\\Local\\agy\\bin\\agy.exe\u0007\u001b[?25h\r\n"
+
+const getPromptTempDir = (args: string[]) => {
+  const addDirIndex = args.indexOf("--add-dir")
+  expect(addDirIndex).toBeGreaterThanOrEqual(0)
+  return args[addDirIndex + 1]
+}
+
+const expectFilePromptArgs = (args: string[], agyModel: string, longPrompt: string) => {
+  const tempDir = getPromptTempDir(args)
+  const promptIndex = args.indexOf("-p")
+
+  expect(args).toContain("--add-dir")
+  expect(args).toContain("--model")
+  expect(args[args.indexOf("--model") + 1]).toBe(agyModel)
+  expect(promptIndex).toBeGreaterThanOrEqual(0)
+  expect(args[promptIndex + 1]).toBe("Read prompt.txt from the added directory and follow it exactly.")
+  expect(args).not.toContain(longPrompt)
+  expect(args).not.toContain("--prompt-file")
+  expect(args).not.toContain("@prompt.txt")
+  expect(path.basename(path.join(tempDir, "prompt.txt"))).toBe("prompt.txt")
+
+  return tempDir
+}
 
 describe("sanitizeAgyGenerationPtyOutput", () => {
   test("removes terminal control sequences from the observed agy generation fixture", () => {
@@ -80,7 +110,7 @@ describe("sanitizeAgyGenerationPtyOutput", () => {
 })
 
 describe("buildAgyCommandInvocation", () => {
-  test("builds extra args, mapped model, and prompt in the required order", () => {
+  test("preserves direct prompt args for legacy invocation tests", () => {
     const invocation = buildAgyCommandInvocation({
       modelId: "workspace-pro",
       prompt: "hello",
@@ -94,6 +124,25 @@ describe("buildAgyCommandInvocation", () => {
 
     expect(invocation.command).toBe("fake-agy")
     expect(invocation.args).toEqual(["--verbose", "--model", "exact-agy-model", "-p", "hello"])
+  })
+
+  test("builds file transport args with add-dir and wrapper prompt", () => {
+    const invocation = buildAgyCommandInvocation(
+      {
+        modelId: "workspace-pro",
+        prompt: "long prompt must not be in args",
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "workspace-pro": "exact-agy-model" },
+          extraArgs: ["--verbose"],
+        },
+      },
+      { type: "file", tempDir: "/tmp/opencode-antigravity-prompt-abc", wrapperPrompt: "Read prompt.txt." },
+    )
+
+    expect(invocation.args).toEqual(["--verbose", "--add-dir", "/tmp/opencode-antigravity-prompt-abc", "--model", "exact-agy-model", "-p", "Read prompt.txt."])
+    expect(invocation.args).not.toContain("long prompt must not be in args")
   })
 
   test("maps the discovered gemini-3-5-flash-medium slug to its exact agy display name", () => {
@@ -118,8 +167,12 @@ describe("buildAgyCommandInvocation", () => {
 describe("runAgyCommand", () => {
   test("spawns the resolved command through PTY and returns final sanitized output", async () => {
     const onStdoutChunks: string[] = []
-    const fake = createFakePtySpawn((child) => {
+    const longPrompt = "hello".repeat(10_000)
+    let promptFileContent = ""
+    const fake = createFakePtySpawn((child, call) => {
       queueMicrotask(() => {
+        const tempDir = getPromptTempDir(call.args)
+        promptFileContent = readFileSync(path.join(tempDir, "prompt.txt"), "utf8")
         child.writeData(generationFixture)
         child.exit(0)
       })
@@ -128,7 +181,7 @@ describe("runAgyCommand", () => {
     const result = await runAgyCommand(
       {
         modelId: "gemini-3-5-flash-medium",
-        prompt: "hello",
+        prompt: longPrompt,
         options: {
           command: "fake-agy",
           timeoutMs: 1_000,
@@ -143,44 +196,45 @@ describe("runAgyCommand", () => {
 
     expect(result).toEqual({ stdout: "OK", stderr: "" })
     expect(onStdoutChunks).toEqual(["OK"])
+    expect(promptFileContent).toBe(longPrompt)
     expect(fake.calls).toHaveLength(1)
     expect(fake.calls[0].command).toBe("fake-agy")
     expect(fake.calls[0].options).toMatchObject({ name: "xterm-color", cols: 120, rows: 30, cwd: "." })
     expect(fake.calls[0].options.env.AGY_TEST_ENV).toBe("1")
-    expect(fake.calls[0].args).toEqual(["--model", "Gemini 3.5 Flash (Medium)", "-p", "hello"])
-    expect(fake.calls[0].args.at(-2)).toBe("-p")
+    const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", longPrompt)
+    expect(existsSync(tempDir)).toBe(false)
   })
 
   test("resolves agy.exe from PATH before spawning the PTY on Windows", async () => {
-    await new Promise<void>((resolve, reject) => {
-      withTempDirectory((directory) => {
-        const executable = path.join(directory, "agy.exe")
-        writeFileSync(executable, "")
-        const fake = createFakePtySpawn((child) => {
-          queueMicrotask(() => {
-            child.writeData("OK")
-            child.exit(0)
-          })
+    await withTempDirectory(async (directory) => {
+      const executable = path.join(directory, "agy.exe")
+      writeFileSync(executable, "")
+      const fake = createFakePtySpawn((child) => {
+        queueMicrotask(() => {
+          child.writeData("OK")
+          child.exit(0)
         })
-
-        void runAgyCommand(
-          {
-            modelId: "gemini-3-5-flash-medium",
-            prompt: "hello",
-            options: {
-              command: "agy",
-              timeoutMs: 1_000,
-              modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
-              env: { PATH: directory, PATHEXT: ".EXE" },
-            },
-          },
-          { ptySpawn: fake.ptySpawn, platform: "win32" },
-        ).then((result) => {
-          expect(result.stdout).toBe("OK")
-          expect(fake.calls[0].command).toBe(executable)
-          resolve()
-        }, reject)
       })
+
+      const result = await runAgyCommand(
+        {
+          modelId: "gemini-3-5-flash-medium",
+          prompt: "hello",
+          options: {
+            command: "agy",
+            timeoutMs: 1_000,
+            modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+            env: { PATH: directory, PATHEXT: ".EXE" },
+          },
+        },
+        { ptySpawn: fake.ptySpawn, platform: "win32" },
+      )
+
+      expect(result.stdout).toBe("OK")
+      expect(fake.calls[0].command).toBe(executable)
+      const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", "hello")
+      expect(existsSync(tempDir)).toBe(false)
+      expect(fake.calls[0].child.releaseEvents).toEqual(["in", "out", "worker"])
     })
   })
 
@@ -194,6 +248,7 @@ describe("runAgyCommand", () => {
   })
 
   test("turns nonzero exits into sanitized diagnostic errors", async () => {
+    const prompt = "hello nonzero"
     const fake = createFakePtySpawn((child) => {
       queueMicrotask(() => {
         child.writeData("\u001b[31mboom\u001b[0m")
@@ -205,7 +260,7 @@ describe("runAgyCommand", () => {
       runAgyCommand(
         {
           modelId: "gemini-3-5-flash-medium",
-          prompt: "hello",
+          prompt,
           options: {
             command: "fake-agy",
             timeoutMs: 1_000,
@@ -215,9 +270,12 @@ describe("runAgyCommand", () => {
         { ptySpawn: fake.ptySpawn, platform: "linux" },
       ),
     ).rejects.toThrow("Antigravity CLI failed with exit code 2. boom")
+    const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", prompt)
+    expect(existsSync(tempDir)).toBe(false)
   })
 
   test("rejects empty sanitized output with the required no-output message", async () => {
+    const prompt = "hello no output"
     const fake = createFakePtySpawn((child) => {
       queueMicrotask(() => {
         child.writeData("\u001b[?25h\r\n")
@@ -229,7 +287,7 @@ describe("runAgyCommand", () => {
       runAgyCommand(
         {
           modelId: "gemini-3-5-flash-medium",
-          prompt: "hello",
+          prompt,
           options: {
             command: "fake-agy",
             timeoutMs: 1_000,
@@ -239,9 +297,12 @@ describe("runAgyCommand", () => {
         { ptySpawn: fake.ptySpawn, platform: "linux" },
       ),
     ).rejects.toThrow("Antigravity CLI returned no output.")
+    const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", prompt)
+    expect(existsSync(tempDir)).toBe(false)
   })
 
   test("fails fast on interactive prompts and kills the PTY child", async () => {
+    const prompt = "hello interactive"
     const fake = createFakePtySpawn((child) => {
       queueMicrotask(() => child.writeData("Please login to continue"))
     })
@@ -250,7 +311,7 @@ describe("runAgyCommand", () => {
       runAgyCommand(
         {
           modelId: "gemini-3-5-flash-medium",
-          prompt: "hello",
+          prompt,
           options: {
             command: "fake-agy",
             timeoutMs: 1_000,
@@ -261,14 +322,17 @@ describe("runAgyCommand", () => {
       ),
     ).rejects.toThrow("Run `agy` directly to complete setup")
     expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
+    const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", prompt)
+    expect(existsSync(tempDir)).toBe(false)
   })
 
   test("kills the PTY child and reports the exact timeout message", async () => {
+    const prompt = "hello timeout"
     const fake = createFakePtySpawn()
     const run = runAgyCommand(
       {
         modelId: "gemini-3-5-flash-medium",
-        prompt: "hello",
+        prompt,
         options: {
           command: "./fake-agy",
           timeoutMs: 1_000,
@@ -288,15 +352,18 @@ describe("runAgyCommand", () => {
 
     await expect(run).rejects.toThrow("Antigravity CLI timed out after 1000ms.")
     expect(fake.calls[0].child.killSignals).toEqual([undefined])
+    const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", prompt)
+    expect(existsSync(tempDir)).toBe(false)
   })
 
   test("kills the PTY child and raises AbortError on abort", async () => {
+    const prompt = "hello abort"
     const fake = createFakePtySpawn()
     const abortController = new AbortController()
     const run = runAgyCommand(
       {
         modelId: "gemini-3-5-flash-medium",
-        prompt: "hello",
+        prompt,
         options: {
           command: "fake-agy",
           timeoutMs: 1_000,
@@ -311,5 +378,34 @@ describe("runAgyCommand", () => {
 
     await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
     expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
+    const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", prompt)
+    expect(existsSync(tempDir)).toBe(false)
+  })
+
+  test("cleans up the prompt temp directory when PTY spawn fails", async () => {
+    const prompt = "hello spawn failure"
+    let args: string[] = []
+    const ptySpawn: AgyPtySpawn = (_command, spawnArgs) => {
+      args = spawnArgs
+      throw new Error("spawn exploded")
+    }
+
+    await expect(
+      runAgyCommand(
+        {
+          modelId: "gemini-3-5-flash-medium",
+          prompt,
+          options: {
+            command: "fake-agy",
+            timeoutMs: 1_000,
+            modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+          },
+        },
+        { ptySpawn, platform: "linux" },
+      ),
+    ).rejects.toThrow("Antigravity CLI failed to start. spawn exploded")
+
+    const tempDir = expectFilePromptArgs(args, "Gemini 3.5 Flash (Medium)", prompt)
+    expect(existsSync(tempDir)).toBe(false)
   })
 })

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { existsSync } from "node:fs"
 import { createAntigravityCliProvider } from "./provider"
 import type { AgyPtyDisposable, AgyPtyExitEvent, AgyPtyProcess, AgyPtySpawn, AgyPtySpawnOptions } from "./model-discovery"
 import type { LanguageModelV3StreamPart } from "./types"
@@ -70,6 +71,12 @@ const collectStream = async (stream: ReadableStream<LanguageModelV3StreamPart>) 
   }
 }
 
+const getPromptTempDir = (args: string[]) => {
+  const addDirIndex = args.indexOf("--add-dir")
+  expect(addDirIndex).toBeGreaterThanOrEqual(0)
+  return args[addDirIndex + 1]
+}
+
 describe("createAntigravityCliProvider", () => {
   test("creates local AI SDK V3 language models", () => {
     const provider = createAntigravityCliProvider({ command: "fake-agy", timeoutMs: 1_000, modelMap: { gemini: "Gemini" } })
@@ -94,7 +101,9 @@ describe("createAntigravityCliProvider", () => {
     expect(result.content).toEqual([{ type: "text", text: "OK" }])
     expect(result.usage.inputTokens.total).toBeUndefined()
     expect(result.finishReason).toEqual({ unified: "stop", raw: undefined })
-    expect(fake.calls[0].args.at(-1)).toContain("hello")
+    expect(fake.calls[0].args.join("\n")).not.toContain("hello")
+    expect(fake.calls[0].args.at(-1)).toBe("Read prompt.txt from the added directory and follow it exactly.")
+    expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
     expect(fake.calls[0].options.name).toBe("xterm-color")
   })
 

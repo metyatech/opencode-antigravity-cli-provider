@@ -29,8 +29,8 @@ describe("normalizeOptions", () => {
     expect(() => normalizeOptions(options)).toThrow("extraArgs must be an array, not a string")
   })
 
-  test("rejects auth, account, project, credential, and model extra args", () => {
-    for (const arg of ["--api-key", "--token=value", "--auth", "--credential", "--credentials", "--project", "--account", "--login", "--logout", "--model", "--model=Some Model"]) {
+  test("rejects auth, account, project, credential, model, and add-dir extra args", () => {
+    for (const arg of ["--api-key", "--token=value", "--auth", "--credential", "--credentials", "--project", "--account", "--login", "--logout", "--model", "--model=Some Model", "--add-dir", "--add-dir=/tmp/prompt"]) {
       expect(() => normalizeOptions({ extraArgs: [arg] })).toThrow("Configure authentication by running agy directly")
     }
   })
@@ -62,7 +62,19 @@ describe("resolveAgyModel", () => {
 })
 
 describe("buildAgyArgs", () => {
-  test("always includes the exact model name before the prompt", () => {
-    expect(buildAgyArgs(["--verbose"], "exact-agy-model", "hello")).toEqual(["--verbose", "--model", "exact-agy-model", "-p", "hello"])
+  test("file transport adds the temp directory and only the short wrapper prompt", () => {
+    expect(buildAgyArgs(["--verbose"], "exact-agy-model", { type: "file", tempDir: "/tmp/opencode-antigravity-prompt-abc", wrapperPrompt: "Read prompt.txt." })).toEqual([
+      "--verbose",
+      "--add-dir",
+      "/tmp/opencode-antigravity-prompt-abc",
+      "--model",
+      "exact-agy-model",
+      "-p",
+      "Read prompt.txt.",
+    ])
+  })
+
+  test("direct transport preserves legacy prompt args for tests and future callers", () => {
+    expect(buildAgyArgs(["--verbose"], "exact-agy-model", { type: "direct", prompt: "hello" })).toEqual(["--verbose", "--model", "exact-agy-model", "-p", "hello"])
   })
 })

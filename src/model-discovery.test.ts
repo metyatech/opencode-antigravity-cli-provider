@@ -16,6 +16,12 @@ class FakeAgyPty implements AgyPtyProcess {
   private dataListeners: Array<(data: string) => void> = []
   private exitListeners: Array<(event: AgyPtyExitEvent) => void> = []
   killSignals: Array<string | undefined> = []
+  releaseEvents: string[] = []
+  _agent = {
+    _inSocket: { destroy: () => this.releaseEvents.push("in") },
+    _outSocket: { destroy: () => this.releaseEvents.push("out") },
+    _conoutSocketWorker: { dispose: () => this.releaseEvents.push("worker") },
+  }
 
   onData(listener: (data: string) => void): AgyPtyDisposable {
     this.dataListeners.push(listener)
@@ -231,6 +237,19 @@ describe("discoverAgyModels", () => {
       "claude-opus-4-6-thinking": "Claude Opus 4.6 (Thinking)",
       "gpt-oss-120b-medium": "GPT-OSS 120B (Medium)",
     })
+  })
+
+  test("releases Windows PTY internals after successful discovery", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData(actualAgyModelsOutput)
+        child.exit(0)
+      })
+    })
+
+    await discoverAgyModels({ command: "./fake-agy", timeoutMs: 1_000 }, { ptySpawn: fake.ptySpawn, platform: "win32" })
+
+    expect(fake.calls[0].child.releaseEvents).toEqual(["in", "out", "worker"])
   })
 
   test("preserves the first model line when bare-CR spinner redraws the same PTY row", async () => {

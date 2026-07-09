@@ -52,6 +52,22 @@ export type AgyPtyProcess = {
   kill(signal?: string): void
 }
 
+type WindowsPtyAgentSocket = {
+  destroy?: () => void
+}
+
+type WindowsPtyAgentWorker = {
+  dispose?: () => void
+}
+
+type WindowsPtyInternals = {
+  _agent?: {
+    _inSocket?: WindowsPtyAgentSocket
+    _outSocket?: WindowsPtyAgentSocket
+    _conoutSocketWorker?: WindowsPtyAgentWorker
+  }
+}
+
 export type AgyPtySpawn = (command: string, args: string[], options: AgyPtySpawnOptions) => AgyPtyProcess
 
 export type AgyPtyModule = {
@@ -150,6 +166,29 @@ export const resolveAgyExecutable = (command: string, env: NodeJS.ProcessEnv = p
   }
 
   throw new AntigravityCliProviderError(`Antigravity CLI executable "${command}" was not found on PATH.`)
+}
+
+export const releaseAgyPtyProcess = (child: AgyPtyProcess, platform: NodeJS.Platform) => {
+  if (platform !== "win32") {
+    return
+  }
+
+  const agent = (child as AgyPtyProcess & WindowsPtyInternals)._agent
+  try {
+    agent?._inSocket?.destroy?.()
+  } catch {
+    // Best-effort release: preserve the primary CLI result/error.
+  }
+  try {
+    agent?._outSocket?.destroy?.()
+  } catch {
+    // Best-effort release: preserve the primary CLI result/error.
+  }
+  try {
+    agent?._conoutSocketWorker?.dispose?.()
+  } catch {
+    // Best-effort release: preserve the primary CLI result/error.
+  }
 }
 
 const ansiCsiPattern = new RegExp(String.raw`\x1b\[[0-?]*[ -/]*[@-~]`, "g")
@@ -262,6 +301,7 @@ export const discoverAgyModels = async (options: DiscoverAgyModelsOptions = {}, 
 
     const cleanup = () => {
       clearTimer(timeout)
+      releaseAgyPtyProcess(child, platform)
       for (const disposable of disposables) {
         disposable.dispose()
       }

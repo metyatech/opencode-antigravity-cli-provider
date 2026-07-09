@@ -2,7 +2,7 @@
 
 ## Overview
 
-`opencode-antigravity-cli-provider` is a standalone OpenCode plugin and AI SDK custom provider for the official Antigravity `agy` CLI. It registers an OpenCode provider named `antigravity-cli` and delegates generation to `agy --model <exact display name> -p <prompt>` through a `node-pty` pseudoterminal.
+`opencode-antigravity-cli-provider` is a standalone OpenCode plugin and AI SDK custom provider for the official Antigravity `agy` CLI. It registers an OpenCode provider named `antigravity-cli` and delegates generation to the official CLI through a `node-pty` pseudoterminal.
 
 This repository is intentionally narrow: it packages the provider as local plugin source for OpenCode and preserves the existing text-only `agy` CLI behavior. It does not implement an Antigravity backend client.
 
@@ -33,12 +33,15 @@ Then add the built plugin to your OpenCode config from the local vendor path. Th
 On startup, the plugin runs the official read-only `agy models` command through
 a pseudoterminal (`node-pty`) and builds OpenCode model IDs from the displayed
 model names. Discovery uses a PTY because pipe-based execution can hang or never
-emit the model list for this CLI. Generation also uses `node-pty` because
-`agy --model <exact display name> -p <prompt>` may hang or time out when run
-through pipe-based execution. It auto-injects the `antigravity-cli` provider only
-if `provider["antigravity-cli"]` is absent and discovery returns at least one
-model. It does NOT change your top-level default `model` unless you explicitly
-pass the plugin `model` option with a discovered slug.
+emit the model list for this CLI. Generation also uses `node-pty` and avoids
+putting the full rendered prompt on the command line: the provider writes the
+prompt to an OS-temp UTF-8 `prompt.txt`, passes that temp directory with the
+official `--add-dir`, and sends only a short wrapper prompt with `-p`. This
+mitigates Windows error 206 (`The filename or extension is too long`) for long
+OpenCode prompts. It auto-injects the `antigravity-cli` provider only if
+`provider["antigravity-cli"]` is absent and discovery returns at least one model.
+It does NOT change your top-level default `model` unless you explicitly pass the
+plugin `model` option with a discovered slug.
 
 For example, this `agy models` output:
 
@@ -182,13 +185,16 @@ Example with supported options:
 - Streaming emits the final sanitized generation text as a text delta.
 - PTY terminal control sequences from generation output are sanitized before the
   text is returned.
-- Each request is a fresh `agy --model <exact display name> -p` PTY invocation.
+- Each generation request is a fresh PTY invocation that passes the exact model
+  display name, adds a temp prompt directory with `--add-dir`, and uses `-p`
+  only for the short wrapper prompt. The temp directory is removed after the
+  request finishes or fails.
 
 ## Safety model
 
 This project only bridges to the official `agy` CLI. It does not introduce OAuth, keyring inspection, internal Antigravity APIs, sidecars, proxies, local OpenAI-compatible servers, account rotation, quota bypasses, credential managers, token fetchers, direct Google/Antigravity backend fetches, aliases, or a doctor command.
 
-`extraArgs` are intended for generation helper arguments only; they cannot be used to override `--model` because model selection is determined exclusively by the OpenCode selected slug and the discovery-derived `modelMap`. The provider also rejects dangerous authentication or account-routing arguments in `extraArgs`: `--api-key`, `--token`, `--auth`, `--credential`, `--credentials`, `--project`, `--account`, `--login`, `--logout`, and `--model`. Discovery and generation both spawn `agy` through `node-pty` without a shell. This repository does not use `child_process.exec`.
+`extraArgs` are intended for generation helper arguments only; they cannot be used to override `--model` or the managed prompt workspace because model selection and prompt transport are determined exclusively by the OpenCode selected slug, the discovery-derived `modelMap`, and the provider-created temp `prompt.txt`. The provider also rejects dangerous authentication, account-routing, model, and prompt-workspace arguments in `extraArgs`: `--api-key`, `--token`, `--auth`, `--credential`, `--credentials`, `--project`, `--account`, `--login`, `--logout`, `--model`, and `--add-dir`. Discovery and generation both spawn `agy` through `node-pty` without a shell. This repository does not use `child_process.exec`.
 
 Run `agy` directly for interactive setup. If stdout or stderr looks like a login, permission, browser authorization, terms, theme, or workspace-trust prompt, the provider kills the child process and asks you to complete setup in `agy` directly.
 

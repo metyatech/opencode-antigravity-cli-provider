@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { existsSync } from "node:fs"
 import { createAgyTextStream } from "./stream"
 import type { AgyPtyDisposable, AgyPtyExitEvent, AgyPtyProcess, AgyPtySpawn, AgyPtySpawnOptions } from "./model-discovery"
 import type { LanguageModelV3StreamPart } from "./types"
@@ -70,6 +71,12 @@ const collectStream = async (stream: ReadableStream<LanguageModelV3StreamPart>) 
   }
 }
 
+const getPromptTempDir = (args: string[]) => {
+  const addDirIndex = args.indexOf("--add-dir")
+  expect(addDirIndex).toBeGreaterThanOrEqual(0)
+  return args[addDirIndex + 1]
+}
+
 describe("createAgyTextStream", () => {
   test("emits the final sanitized PTY output as one text delta and finishes", async () => {
     const fake = createFakePtySpawn((child) => {
@@ -98,7 +105,9 @@ describe("createAgyTextStream", () => {
     expect(parts.filter((part) => part.type === "text-delta").map((part) => part.delta)).toEqual(["OK"])
     expect(parts.at(-1)).toMatchObject({ type: "finish", finishReason: { unified: "stop", raw: undefined } })
     expect(fake.calls[0].options.name).toBe("xterm-color")
-    expect(fake.calls[0].args).toEqual(["--model", "Gemini 3.5 Flash (Medium)", "-p", "hello"])
+    expect(fake.calls[0].args.join("\n")).not.toContain("hello")
+    expect(fake.calls[0].args.at(-1)).toBe("Read prompt.txt from the added directory and follow it exactly.")
+    expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
     expect(fake.calls[0].args[fake.calls[0].args.indexOf("--model") + 1]).toBe("Gemini 3.5 Flash (Medium)")
   })
 
@@ -152,7 +161,11 @@ describe("createAgyTextStream", () => {
   })
 
   test("kills the PTY child when the stream reader cancels", async () => {
-    const fake = createFakePtySpawn()
+    let markSpawned: () => void = () => undefined
+    const spawned = new Promise<void>((resolve) => {
+      markSpawned = resolve
+    })
+    const fake = createFakePtySpawn(() => markSpawned())
     const stream = createAgyTextStream(
       {
         modelId: "gemini-3-5-flash-medium",
@@ -168,13 +181,18 @@ describe("createAgyTextStream", () => {
     const reader = stream.getReader()
 
     await reader.read()
+    await spawned
     await reader.cancel()
 
     expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
   })
 
   test("kills the PTY child when the request abort signal fires", async () => {
-    const fake = createFakePtySpawn()
+    let markSpawned: () => void = () => undefined
+    const spawned = new Promise<void>((resolve) => {
+      markSpawned = resolve
+    })
+    const fake = createFakePtySpawn(() => markSpawned())
     const abortController = new AbortController()
     const stream = createAgyTextStream(
       {
@@ -192,6 +210,7 @@ describe("createAgyTextStream", () => {
     const reader = stream.getReader()
 
     await reader.read()
+    await spawned
     abortController.abort()
 
     await expect(reader.read()).rejects.toThrow("Antigravity CLI call aborted.")
