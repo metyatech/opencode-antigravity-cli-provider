@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process"
 import {
   AntigravityCliProviderError,
   AntigravityCliTimeoutError,
+  attachPromptCleanupError,
   createAbortError,
   createExitError,
   createInteractiveSetupError,
@@ -13,7 +13,7 @@ import { buildAgyArgs, normalizeOptions, resolveAgyModel } from "./options"
 import { createPromptFileTransport } from "./prompt-transport"
 import type { AgyPtyDisposable, AgyPtyModule, AgyPtyProcess } from "./model-discovery"
 import type { AgyPromptTransport } from "./options"
-import type { AgyCommandInvocation, AgyCommandResult, AgyForceKillWindowsProcess, RunAgyCommandDependencies, RunAgyCommandRequest } from "./types"
+import type { AgyCommandInvocation, AgyCommandResult, RunAgyCommandDependencies, RunAgyCommandRequest } from "./types"
 
 type WritablePtySocket = {
   closed?: boolean
@@ -30,23 +30,9 @@ type AgyPtyProcessWithInputSocket = AgyPtyProcess & {
   }
 }
 
-type AgyPtyProcessWithPid = AgyPtyProcess & {
-  pid?: unknown
-}
-
 const defaultLoadNodePty = async (): Promise<AgyPtyModule> => {
   const nodePty = await import("node-pty")
   return { spawn: nodePty.spawn }
-}
-
-const defaultForceKillWindowsProcess: AgyForceKillWindowsProcess = (pid) => {
-  const helper = spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
-    shell: false,
-    stdio: "ignore",
-    windowsHide: true,
-  })
-  helper.on("error", () => undefined)
-  helper.unref()
 }
 
 const ansiCsiPattern = new RegExp(String.raw`\x1b\[[0-?]*[ -/]*[@-~]`, "g")
@@ -113,21 +99,12 @@ const writeCancellationInterrupt = (child: AgyPtyProcess, platform: NodeJS.Platf
   child.write?.("\x03")
 }
 
-const forceKillWindowsChild = (child: AgyPtyProcess, forceKillWindowsProcess: AgyForceKillWindowsProcess) => {
-  const pid = (child as AgyPtyProcessWithPid).pid
-  if (typeof pid === "number" && Number.isInteger(pid) && pid > 0) {
-    forceKillWindowsProcess(pid)
-    return
-  }
-
-  child.kill()
-}
-
 export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAgyCommandDependencies = {}) => {
   const options = normalizeOptions(request.options)
   const agyModel = resolveAgyModel(request.modelId, options.modelMap)
   const run = async () => {
-    const promptFileTransport = await createPromptFileTransport(request.prompt)
+    const promptTransportFactory = dependencies.createPromptFileTransport ?? createPromptFileTransport
+    const promptFileTransport = await promptTransportFactory(request.prompt)
     const invocation: AgyCommandInvocation = {
       command: options.command,
       args: buildAgyArgs(options.extraArgs, agyModel, {
@@ -138,17 +115,16 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
       options,
       agyModel,
     }
-    try {
+    const runCommand = async () => {
       const loadNodePty = dependencies.loadNodePty ?? defaultLoadNodePty
       const ptySpawn = dependencies.ptySpawn ?? (await loadNodePty()).spawn
       const setTimer = dependencies.setTimeout ?? ((handler, timeoutMs) => setTimeout(handler, timeoutMs))
       const clearTimer = dependencies.clearTimeout ?? ((timer) => clearTimeout(timer))
       const platform = dependencies.platform ?? process.platform
-      const forceKillWindowsProcess = dependencies.forceKillWindowsProcess ?? defaultForceKillWindowsProcess
       const env = { ...process.env, ...invocation.options.env }
       const resolvedCommand = resolveAgyExecutable(invocation.command, env, platform)
 
-      return await new Promise<AgyCommandResult>((resolve, reject) => {
+      return new Promise<AgyCommandResult>((resolve, reject) => {
         let child: AgyPtyProcess
         try {
           child = ptySpawn(resolvedCommand, invocation.args, {
@@ -212,7 +188,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
 
           forceKillSent = true
           if (platform === "win32") {
-            forceKillWindowsChild(child, forceKillWindowsProcess)
+            child.kill()
             return
           }
 
@@ -301,9 +277,23 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           abort()
         }
       })
-    } finally {
-      await promptFileTransport.cleanup()
     }
+
+    let commandResult: AgyCommandResult
+    try {
+      commandResult = await runCommand()
+    } catch (primaryError) {
+      try {
+        await promptFileTransport.cleanup()
+      } catch (cleanupError) {
+        throw attachPromptCleanupError(primaryError, cleanupError)
+      }
+
+      throw primaryError
+    }
+
+    await promptFileTransport.cleanup()
+    return commandResult
   }
 
   return run()

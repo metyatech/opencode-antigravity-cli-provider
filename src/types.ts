@@ -1,6 +1,5 @@
 import type { AgyPtyModule, AgyPtySpawn } from "./model-discovery"
-
-export type AgyForceKillWindowsProcess = (pid: number) => void
+import type { PromptFileTransport } from "./prompt-transport"
 
 export type AntigravityCliProviderOptions = {
   command?: string
@@ -39,12 +38,12 @@ export type AgyClearTimeout = (timer: ReturnType<typeof setTimeout>) => void
 export type RunAgyCommandDependencies = {
   ptySpawn?: AgyPtySpawn
   loadNodePty?: () => Promise<AgyPtyModule>
+  createPromptFileTransport?: (prompt: string) => Promise<PromptFileTransport>
   setTimeout?: AgySetTimeout
   clearTimeout?: AgyClearTimeout
   platform?: NodeJS.Platform
   cancellationGraceMs?: number
   cancellationForceCleanupMs?: number
-  forceKillWindowsProcess?: AgyForceKillWindowsProcess
 }
 
 export type RunAgyCommandRequest = {

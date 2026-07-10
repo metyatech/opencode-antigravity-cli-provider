@@ -1,8 +1,11 @@
 import { runAgyCommand } from "./agy-command"
+import { getPromptCleanupError } from "./errors"
 import { APPROXIMATION_WARNINGS, createStopFinishReason, createUnknownUsage } from "./types"
 import type { LanguageModelV3StreamPart, RunAgyCommandDependencies, RunAgyCommandRequest } from "./types"
 
 const textStreamId = "antigravity-cli-text"
+
+const isAbortError = (error: unknown) => error instanceof Error && error.name === "AbortError"
 
 export const createAgyTextStream = (request: RunAgyCommandRequest, dependencies: RunAgyCommandDependencies = {}) => {
   let abortController: AbortController | undefined
@@ -78,7 +81,14 @@ export const createAgyTextStream = (request: RunAgyCommandRequest, dependencies:
       abortController?.abort()
       return runPromise?.then(
         () => undefined,
-        () => undefined,
+        (error: unknown) => {
+          const cleanupError = getPromptCleanupError(error)
+          if (isAbortError(error) && cleanupError !== undefined) {
+            return Promise.reject(cleanupError)
+          }
+
+          return undefined
+        },
       )
     },
   })

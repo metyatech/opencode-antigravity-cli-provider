@@ -5,6 +5,39 @@ export class AntigravityCliProviderError extends Error {
   }
 }
 
+export type PromptCleanupErrorCarrier = Error & {
+  cleanupError?: Error
+}
+
+const cleanupFailureNotePrefix = "Prompt cleanup also failed:"
+
+const toError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)))
+
+export const attachPromptCleanupError = (primaryError: unknown, cleanupError: unknown) => {
+  const cleanup = toError(cleanupError)
+  if (primaryError instanceof Error) {
+    const carrier: PromptCleanupErrorCarrier = primaryError
+    carrier.cleanupError = cleanup
+    if (!primaryError.message.includes(cleanupFailureNotePrefix)) {
+      primaryError.message = `${primaryError.message} ${cleanupFailureNotePrefix} ${cleanup.message}`
+    }
+    return primaryError
+  }
+
+  const wrapped: PromptCleanupErrorCarrier = new AntigravityCliProviderError(`Antigravity CLI failed. ${cleanupFailureNotePrefix} ${cleanup.message}`, { cause: primaryError })
+  wrapped.cleanupError = cleanup
+  return wrapped
+}
+
+export const getPromptCleanupError = (error: unknown) => {
+  if (!(error instanceof Error)) {
+    return undefined
+  }
+
+  const carrier: PromptCleanupErrorCarrier = error
+  return carrier.cleanupError
+}
+
 export class AntigravityCliConfigurationError extends AntigravityCliProviderError {
   constructor(message: string) {
     super(message)

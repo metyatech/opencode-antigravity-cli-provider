@@ -3,7 +3,9 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { buildAgyCommandInvocation, runAgyCommand, sanitizeAgyGenerationPtyOutput } from "./agy-command"
+import { AntigravityCliTimeoutError, getPromptCleanupError } from "./errors"
 import type { AgyPtyDisposable, AgyPtyExitEvent, AgyPtyProcess, AgyPtySpawn, AgyPtySpawnOptions } from "./model-discovery"
+import type { PromptFileTransport } from "./prompt-transport"
 
 class FakeAgyPty implements AgyPtyProcess {
   private dataListeners: Array<(data: string) => void> = []
@@ -12,7 +14,6 @@ class FakeAgyPty implements AgyPtyProcess {
   writeCalls: string[] = []
   disposeEvents: string[] = []
   releaseEvents: string[] = []
-  pid?: number
   _agent = {
     _inSocket: { destroy: () => this.releaseEvents.push("in") },
     _outSocket: { destroy: () => this.releaseEvents.push("out") },
@@ -177,6 +178,18 @@ const expectFilePromptArgs = (args: string[], agyModel: string, longPrompt: stri
   return tempDir
 }
 
+const createInjectedPromptTransport = (cleanup: () => Promise<void> = async () => undefined) => {
+  const tempDir = path.join(tmpdir(), `opencode-antigravity-prompt-injected-${Math.random().toString(16).slice(2)}`)
+  const promptFile = path.join(tempDir, "prompt.txt")
+  const transport: PromptFileTransport = {
+    tempDir,
+    promptFile,
+    wrapperPrompt: `Read the prompt file at '${promptFile}' and answer the request written in that file. Treat the file contents as the user's full request. Return only the final answer. Do not summarize or echo the file unless it asks for that.`,
+    cleanup,
+  }
+  return transport
+}
+
 describe("sanitizeAgyGenerationPtyOutput", () => {
   test("removes terminal control sequences from the observed agy generation fixture", () => {
     expect(sanitizeAgyGenerationPtyOutput(generationFixture)).toBe("OK")
@@ -285,6 +298,68 @@ describe("runAgyCommand", () => {
     expect(wrapperPrompt).not.toContain(longPrompt)
     expect(wrapperPrompt).not.toContain("hello".repeat(1_000))
     expect(existsSync(tempDir)).toBe(false)
+  })
+
+  test("success with cleanup success resolves normally", async () => {
+    let cleanupCalls = 0
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("OK")
+        child.exit(0)
+      })
+    })
+
+    const result = await runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello cleanup success",
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        createPromptFileTransport: async () =>
+          createInjectedPromptTransport(async () => {
+            cleanupCalls += 1
+          }),
+      },
+    )
+
+    expect(result.stdout).toBe("OK")
+    expect(cleanupCalls).toBe(1)
+  })
+
+  test("success with cleanup failure rejects the cleanup error", async () => {
+    const cleanupError = new Error("cleanup exploded")
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("OK")
+        child.exit(0)
+      })
+    })
+
+    await expect(
+      runAgyCommand(
+        {
+          modelId: "gemini-3-5-flash-medium",
+          prompt: "hello cleanup failure",
+          options: {
+            command: "fake-agy",
+            timeoutMs: 1_000,
+            modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+          },
+        },
+        {
+          ptySpawn: fake.ptySpawn,
+          platform: "linux",
+          createPromptFileTransport: async () => createInjectedPromptTransport(async () => Promise.reject(cleanupError)),
+        },
+      ),
+    ).rejects.toBe(cleanupError)
   })
 
   test("resolves agy.exe from PATH before spawning the PTY on Windows", async () => {
@@ -486,9 +561,50 @@ describe("runAgyCommand", () => {
 
     fake.calls[0].child.exit(1)
 
-    await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
+    await expect(run).rejects.toMatchObject({ name: "AbortError", message: "Antigravity CLI call aborted." })
     expect(fake.calls[0].child.disposeEvents).toEqual(["data", "exit"])
     expect(existsSync(tempDir)).toBe(false)
+  })
+
+  test("abort with cleanup failure preserves AbortError and exposes cleanupError", async () => {
+    const cleanupError = new Error("cleanup failed after abort")
+    const fake = createFakePtySpawn()
+    const timers = createManualTimers()
+    const abortController = new AbortController()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello abort cleanup failure",
+        options: {
+          command: "./fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        abortSignal: abortController.signal,
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        createPromptFileTransport: async () => createInjectedPromptTransport(async () => Promise.reject(cleanupError)),
+      },
+    )
+
+    await waitForSpawn(fake.calls)
+    abortController.abort()
+    fake.calls[0].child.exit(1)
+
+    try {
+      await run
+      throw new Error("run unexpectedly resolved")
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error)
+      expect((error as Error).name).toBe("AbortError")
+      expect((error as Error).message).toContain("Antigravity CLI call aborted.")
+      expect((error as Error).message).toContain("Prompt cleanup also failed: cleanup failed after abort")
+      expect(getPromptCleanupError(error)).toBe(cleanupError)
+    }
   })
 
   test("force kills after cancellation grace without rejecting before PTY exit", async () => {
@@ -573,12 +689,11 @@ describe("runAgyCommand", () => {
     expect(existsSync(tempDir)).toBe(false)
   })
 
-  test("uses a non-mutating Windows process force-kill when the PTY pid is available", async () => {
+  test("Windows force kill calls child.kill(undefined) once", async () => {
     const prompt = "hello windows force kill"
     const fake = createFakePtySpawn()
     const timers = createManualTimers()
     const abortController = new AbortController()
-    const killedPids: number[] = []
     const run = runAgyCommand(
       {
         modelId: "gemini-3-5-flash-medium",
@@ -597,21 +712,55 @@ describe("runAgyCommand", () => {
         clearTimeout: timers.clearTimeout,
         cancellationGraceMs: 25,
         cancellationForceCleanupMs: 100,
-        forceKillWindowsProcess: (pid) => {
-          killedPids.push(pid)
-        },
       },
     )
 
     await waitForSpawn(fake.calls)
-    fake.calls[0].child.pid = 1234
     abortController.abort()
     timers.fire(25)
 
-    expect(killedPids).toEqual([1234])
-    expect(fake.calls[0].child.killSignals).toEqual([])
+    expect(fake.calls[0].child.killSignals).toEqual([undefined])
     fake.calls[0].child.exit(1)
     await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
+  })
+
+  test("timeout with cleanup failure preserves timeout error class and cleanupError", async () => {
+    const cleanupError = new Error("cleanup failed after timeout")
+    const fake = createFakePtySpawn()
+    const timers = createManualTimers()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello timeout cleanup failure",
+        options: {
+          command: "./fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        createPromptFileTransport: async () => createInjectedPromptTransport(async () => Promise.reject(cleanupError)),
+      },
+    )
+
+    await waitForSpawn(fake.calls)
+    timers.fire(1_000)
+    fake.calls[0].child.exit(1)
+
+    try {
+      await run
+      throw new Error("run unexpectedly resolved")
+    } catch (error) {
+      expect(error).toBeInstanceOf(AntigravityCliTimeoutError)
+      expect((error as Error).name).toBe("AntigravityCliTimeoutError")
+      expect((error as Error).message).toContain("Antigravity CLI timed out after 1000ms.")
+      expect((error as Error).message).toContain("Prompt cleanup also failed: cleanup failed after timeout")
+      expect(getPromptCleanupError(error)).toBe(cleanupError)
+    }
   })
 
   test("releases Windows agent resources once after canceling and receiving PTY exit", async () => {

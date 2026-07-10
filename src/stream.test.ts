@@ -4,6 +4,7 @@ import path from "node:path"
 import { createAgyTextStream } from "./stream"
 import type { AgyPtyDisposable, AgyPtyExitEvent, AgyPtyProcess, AgyPtySpawn, AgyPtySpawnOptions } from "./model-discovery"
 import type { LanguageModelV3StreamPart } from "./types"
+import type { PromptFileTransport } from "./prompt-transport"
 
 class FakeAgyPty implements AgyPtyProcess {
   private dataListeners: Array<(data: string) => void> = []
@@ -139,6 +140,18 @@ const expectWrapperPrompt = (args: string[], promptBody: string) => {
   return tempDir
 }
 
+const createInjectedPromptTransport = (cleanup: () => Promise<void>) => {
+  const tempDir = `/tmp/opencode-antigravity-prompt-stream-${Math.random().toString(16).slice(2)}`
+  const promptFile = path.join(tempDir, "prompt.txt")
+  const transport: PromptFileTransport = {
+    tempDir,
+    promptFile,
+    wrapperPrompt: `Read the prompt file at '${promptFile}' and answer the request written in that file. Treat the file contents as the user's full request. Return only the final answer. Do not summarize or echo the file unless it asks for that.`,
+    cleanup,
+  }
+  return transport
+}
+
 describe("createAgyTextStream", () => {
   test("emits the final sanitized PTY output as one text delta and finishes", async () => {
     const fake = createFakePtySpawn((child) => {
@@ -267,6 +280,67 @@ describe("createAgyTextStream", () => {
     expect(existsSync(tempDir)).toBe(false)
   })
 
+  test("reader.cancel swallows ordinary AbortError", async () => {
+    let markSpawned: () => void = () => undefined
+    const spawned = new Promise<void>((resolve) => {
+      markSpawned = resolve
+    })
+    const fake = createFakePtySpawn(() => markSpawned())
+    const stream = createAgyTextStream(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello ordinary abort",
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux" },
+    )
+    const reader = stream.getReader()
+
+    await reader.read()
+    await spawned
+    const cancelPromise = reader.cancel()
+    fake.calls[0].child.exit(1)
+
+    await expect(cancelPromise).resolves.toBeUndefined()
+  })
+
+  test("reader.cancel rejects cleanup failure attached to AbortError", async () => {
+    let markSpawned: () => void = () => undefined
+    const spawned = new Promise<void>((resolve) => {
+      markSpawned = resolve
+    })
+    const cleanupError = new Error("stream cleanup failed")
+    const fake = createFakePtySpawn(() => markSpawned())
+    const stream = createAgyTextStream(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello cleanup cancel failure",
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        createPromptFileTransport: async () => createInjectedPromptTransport(async () => Promise.reject(cleanupError)),
+      },
+    )
+    const reader = stream.getReader()
+
+    await reader.read()
+    await spawned
+    const cancelPromise = reader.cancel()
+    fake.calls[0].child.exit(1)
+
+    await expect(cancelPromise).rejects.toBe(cleanupError)
+  })
+
   test("cancel after child exit resolves without unhandled rejection", async () => {
     let markSpawned: () => void = () => undefined
     const spawned = new Promise<void>((resolve) => {
@@ -304,6 +378,38 @@ describe("createAgyTextStream", () => {
     } finally {
       process.off("unhandledRejection", onUnhandledRejection)
     }
+  })
+
+  test("cancel after streamCancelled ignores later child output and exit", async () => {
+    let markSpawned: () => void = () => undefined
+    const spawned = new Promise<void>((resolve) => {
+      markSpawned = resolve
+    })
+    const onStdoutChunks: string[] = []
+    const fake = createFakePtySpawn(() => markSpawned())
+    const stream = createAgyTextStream(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello ignored after cancel",
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        onStdout: (chunk) => onStdoutChunks.push(chunk),
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux" },
+    )
+    const reader = stream.getReader()
+
+    await reader.read()
+    await spawned
+    const cancelPromise = reader.cancel()
+    fake.calls[0].child.writeData("OK")
+    fake.calls[0].child.exit(0)
+
+    await expect(cancelPromise).resolves.toBeUndefined()
+    expect(onStdoutChunks).toEqual([])
   })
 
   test("keeps prompt temp dir until stream cancel cleanup settles", async () => {

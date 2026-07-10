@@ -190,8 +190,8 @@ Example with supported options:
 - Each generation request is a fresh PTY invocation that passes the exact model
   display name, adds a temp prompt directory with `--add-dir`, and uses `-p`
   only for the short wrapper prompt that points to the exact generated
-  `prompt.txt`. Temp prompt directories and files are removed on a best-effort
-  basis after success, failure, timeout, or abort.
+  `prompt.txt`. Temp prompt directories and files are removed after success,
+  failure, timeout, or abort; cleanup failure is surfaced to the caller.
 - Stream cancellation waits for the underlying CLI cancellation cleanup when the
   caller awaits `ReadableStream` cancellation.
 
