@@ -13,58 +13,64 @@ export type PromptFileTransport = {
 const buildWrapperPrompt = (promptFile: string) =>
   `Read the prompt file at '${promptFile}' and answer the request written in that file. Treat the file contents as the user's full request. Return only the final answer. Do not summarize or echo the file unless it asks for that.`
 
-const isNotFoundError = (error: unknown) => typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT"
-
-const logCleanupWarning = (tempDir: string, error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error)
-  // Best-effort cleanup: never throw to the caller, otherwise the primary CLI
-  // result/error would be masked by a transient filesystem lock during
-  // cancellation. The temp directory may be left on disk for the OS to sweep
-  // later if Windows still holds a handle via the just-exited agy child.
-  console.warn(`opencode-antigravity-cli-provider: failed to remove prompt temp directory ${tempDir}: ${message}`)
+type RemovePromptTempDirDependencies = {
+  rm?: (target: string, options: { recursive: true; force: true; maxRetries: number; retryDelay: number }) => Promise<void>
+  stat?: (target: string) => Promise<unknown>
+  delay?: (timeoutMs: number) => Promise<void>
+  attempts?: number
+  retryDelayMs?: number
 }
 
-const removeTempDir = async (tempDir: string) => {
-  for (let attempt = 1; attempt <= 20; attempt += 1) {
+const cleanupAttempts = 60
+const cleanupRetryDelayMs = 500
+
+const isNotFoundError = (error: unknown) => typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT"
+
+const createCleanupError = (tempDir: string, error: unknown) =>
+  new Error(`Failed to remove prompt temp directory ${tempDir}: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
+
+export const removePromptTempDir = async (tempDir: string, dependencies: RemovePromptTempDirDependencies = {}) => {
+  const rm = dependencies.rm ?? fs.rm
+  const stat = dependencies.stat ?? fs.stat
+  const wait = dependencies.delay ?? delay
+  const attempts = dependencies.attempts ?? cleanupAttempts
+  const retryDelayMs = dependencies.retryDelayMs ?? cleanupRetryDelayMs
+  let lastError: unknown = new Error(`Prompt temp directory still exists: ${tempDir}`)
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+      await rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     } catch (error) {
       if (isNotFoundError(error)) {
         return
       }
 
-      if (attempt < 20) {
-        await delay(250)
+      lastError = error
+      if (attempt < attempts) {
+        await wait(retryDelayMs)
         continue
       }
 
-      logCleanupWarning(tempDir, error)
-      return
+      throw createCleanupError(tempDir, lastError)
     }
 
     try {
-      await fs.stat(tempDir)
+      await stat(tempDir)
+      lastError = new Error(`directory still exists after removal attempt ${attempt}`)
     } catch (error) {
       if (isNotFoundError(error)) {
         return
       }
 
-      if (attempt < 20) {
-        await delay(250)
-        continue
-      }
-
-      logCleanupWarning(tempDir, error)
-      return
+      lastError = error
     }
 
-    if (attempt < 20) {
-      await delay(250)
+    if (attempt < attempts) {
+      await wait(retryDelayMs)
       continue
     }
 
-    logCleanupWarning(tempDir, new Error(`Prompt temp directory still exists after cleanup attempt: ${tempDir}`))
-    return
+    throw createCleanupError(tempDir, lastError)
   }
 }
 
@@ -84,8 +90,8 @@ export const createPromptFileTransport = async (prompt: string): Promise<PromptF
       return
     }
 
+    await removePromptTempDir(tempDir)
     cleaned = true
-    await removeTempDir(tempDir)
   }
 
   return {

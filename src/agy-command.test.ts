@@ -9,10 +9,10 @@ class FakeAgyPty implements AgyPtyProcess {
   private dataListeners: Array<(data: string) => void> = []
   private exitListeners: Array<(event: AgyPtyExitEvent) => void> = []
   killSignals: Array<string | undefined> = []
-  killExecPaths: string[] = []
   writeCalls: string[] = []
   disposeEvents: string[] = []
   releaseEvents: string[] = []
+  pid?: number
   _agent = {
     _inSocket: { destroy: () => this.releaseEvents.push("in") },
     _outSocket: { destroy: () => this.releaseEvents.push("out") },
@@ -44,7 +44,6 @@ class FakeAgyPty implements AgyPtyProcess {
   }
 
   kill(signal?: string) {
-    this.killExecPaths.push(process.execPath)
     this.killSignals.push(signal)
   }
 
@@ -286,61 +285,6 @@ describe("runAgyCommand", () => {
     expect(wrapperPrompt).not.toContain(longPrompt)
     expect(wrapperPrompt).not.toContain("hello".repeat(1_000))
     expect(existsSync(tempDir)).toBe(false)
-  })
-
-  test("does not inherit agent or OpenCode execution environment by default", async () => {
-    const originalAgent = process.env.AGENT
-    const originalAgentToken = process.env.AGENT_GITHUB_TOKEN
-    const originalOpenCodePid = process.env.OPENCODE_PID
-    process.env.AGENT = "sisyphus"
-    process.env.AGENT_GITHUB_TOKEN = "secret-token"
-    process.env.OPENCODE_PID = "12345"
-
-    try {
-      const fake = createFakePtySpawn((child) => {
-        queueMicrotask(() => {
-          child.writeData("OK")
-          child.exit(0)
-        })
-      })
-
-      await runAgyCommand(
-        {
-          modelId: "gemini-3-5-flash-medium",
-          prompt: "hello",
-          options: {
-            command: "fake-agy",
-            timeoutMs: 1_000,
-            modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
-            env: { AGY_TEST_ENV: "1" },
-          },
-        },
-        { ptySpawn: fake.ptySpawn, platform: "linux" },
-      )
-
-      expect(fake.calls[0].options.env.AGENT).toBeUndefined()
-      expect(fake.calls[0].options.env.AGENT_GITHUB_TOKEN).toBeUndefined()
-      expect(fake.calls[0].options.env.OPENCODE_PID).toBeUndefined()
-      expect(fake.calls[0].options.env.AGY_TEST_ENV).toBe("1")
-    } finally {
-      if (originalAgent === undefined) {
-        delete process.env.AGENT
-      } else {
-        process.env.AGENT = originalAgent
-      }
-
-      if (originalAgentToken === undefined) {
-        delete process.env.AGENT_GITHUB_TOKEN
-      } else {
-        process.env.AGENT_GITHUB_TOKEN = originalAgentToken
-      }
-
-      if (originalOpenCodePid === undefined) {
-        delete process.env.OPENCODE_PID
-      } else {
-        process.env.OPENCODE_PID = originalOpenCodePid
-      }
-    }
   })
 
   test("resolves agy.exe from PATH before spawning the PTY on Windows", async () => {
@@ -588,56 +532,6 @@ describe("runAgyCommand", () => {
     expect(fake.calls[0].child.disposeEvents).toEqual(["data", "exit"])
   })
 
-  test("uses node.exe for Windows node-pty force-kill helper when running under Bun", async () => {
-    await withTempDirectory(async (directory) => {
-      const nodeExecutable = path.join(directory, "node.exe")
-      writeFileSync(nodeExecutable, "")
-      const originalDescriptor = Object.getOwnPropertyDescriptor(process, "execPath")
-      Object.defineProperty(process, "execPath", { configurable: true, value: path.join(directory, "bun.exe"), writable: true })
-
-      try {
-        const prompt = "hello windows force kill"
-        const fake = createFakePtySpawn()
-        const timers = createManualTimers()
-        const abortController = new AbortController()
-        const run = runAgyCommand(
-          {
-            modelId: "gemini-3-5-flash-medium",
-            prompt,
-            options: {
-              command: "./fake-agy",
-              timeoutMs: 1_000,
-              modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
-              env: { PATH: directory, PATHEXT: ".EXE" },
-            },
-            abortSignal: abortController.signal,
-          },
-          {
-            ptySpawn: fake.ptySpawn,
-            platform: "win32",
-            setTimeout: timers.setTimeout,
-            clearTimeout: timers.clearTimeout,
-            cancellationGraceMs: 25,
-            cancellationForceCleanupMs: 100,
-          },
-        )
-
-        await waitForSpawn(fake.calls)
-        abortController.abort()
-        timers.fire(25)
-
-        expect(fake.calls[0].child.killExecPaths).toEqual([nodeExecutable])
-        expect(process.execPath).toBe(path.join(directory, "bun.exe"))
-        fake.calls[0].child.exit(1)
-        await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
-      } finally {
-        if (originalDescriptor !== undefined) {
-          Object.defineProperty(process, "execPath", originalDescriptor)
-        }
-      }
-    })
-  })
-
   test("final cleanup fallback rejects cancellation when PTY exit never arrives", async () => {
     const prompt = "hello final cleanup"
     const fake = createFakePtySpawn()
@@ -677,6 +571,47 @@ describe("runAgyCommand", () => {
     expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
     expect(fake.calls[0].child.disposeEvents).toEqual(["data", "exit"])
     expect(existsSync(tempDir)).toBe(false)
+  })
+
+  test("uses a non-mutating Windows process force-kill when the PTY pid is available", async () => {
+    const prompt = "hello windows force kill"
+    const fake = createFakePtySpawn()
+    const timers = createManualTimers()
+    const abortController = new AbortController()
+    const killedPids: number[] = []
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt,
+        options: {
+          command: "./fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        abortSignal: abortController.signal,
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "win32",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        cancellationGraceMs: 25,
+        cancellationForceCleanupMs: 100,
+        forceKillWindowsProcess: (pid) => {
+          killedPids.push(pid)
+        },
+      },
+    )
+
+    await waitForSpawn(fake.calls)
+    fake.calls[0].child.pid = 1234
+    abortController.abort()
+    timers.fire(25)
+
+    expect(killedPids).toEqual([1234])
+    expect(fake.calls[0].child.killSignals).toEqual([])
+    fake.calls[0].child.exit(1)
+    await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
   })
 
   test("releases Windows agent resources once after canceling and receiving PTY exit", async () => {

@@ -1,5 +1,7 @@
 import type { AgyPtyModule, AgyPtySpawn } from "./model-discovery"
 
+export type AgyForceKillWindowsProcess = (pid: number) => void
+
 export type AntigravityCliProviderOptions = {
   command?: string
   timeoutMs?: number
@@ -42,6 +44,7 @@ export type RunAgyCommandDependencies = {
   platform?: NodeJS.Platform
   cancellationGraceMs?: number
   cancellationForceCleanupMs?: number
+  forceKillWindowsProcess?: AgyForceKillWindowsProcess
 }
 
 export type RunAgyCommandRequest = {

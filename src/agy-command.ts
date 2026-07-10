@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process"
 import {
   AntigravityCliProviderError,
   AntigravityCliTimeoutError,
@@ -12,7 +13,7 @@ import { buildAgyArgs, normalizeOptions, resolveAgyModel } from "./options"
 import { createPromptFileTransport } from "./prompt-transport"
 import type { AgyPtyDisposable, AgyPtyModule, AgyPtyProcess } from "./model-discovery"
 import type { AgyPromptTransport } from "./options"
-import type { AgyCommandInvocation, AgyCommandResult, RunAgyCommandDependencies, RunAgyCommandRequest } from "./types"
+import type { AgyCommandInvocation, AgyCommandResult, AgyForceKillWindowsProcess, RunAgyCommandDependencies, RunAgyCommandRequest } from "./types"
 
 type WritablePtySocket = {
   closed?: boolean
@@ -29,53 +30,23 @@ type AgyPtyProcessWithInputSocket = AgyPtyProcess & {
   }
 }
 
+type AgyPtyProcessWithPid = AgyPtyProcess & {
+  pid?: unknown
+}
+
 const defaultLoadNodePty = async (): Promise<AgyPtyModule> => {
   const nodePty = await import("node-pty")
   return { spawn: nodePty.spawn }
 }
 
-const inheritedEnvBlocklistPrefixes = ["AGENT", "OPENCODE"]
-
-const shouldInheritEnvKey = (key: string) => {
-  const normalized = key.toUpperCase()
-  return !inheritedEnvBlocklistPrefixes.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}_`))
-}
-
-const createAgyProcessEnv = (overrides: Record<string, string>) => ({
-  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => shouldInheritEnvKey(key))),
-  ...overrides,
-})
-
-const getNodeExecutableForPtyHelper = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform) => {
-  if (platform !== "win32" || process.execPath.toLowerCase().endsWith("node.exe")) {
-    return undefined
-  }
-
-  try {
-    return resolveAgyExecutable("node", env, platform)
-  } catch {
-    return undefined
-  }
-}
-
-const runWithNodeExecPathForPtyHelper = (nodeExecutable: string | undefined, callback: () => void) => {
-  if (nodeExecutable === undefined) {
-    callback()
-    return
-  }
-
-  const originalDescriptor = Object.getOwnPropertyDescriptor(process, "execPath")
-  const originalExecPath = process.execPath
-  try {
-    Object.defineProperty(process, "execPath", { configurable: true, value: nodeExecutable, writable: true })
-    callback()
-  } finally {
-    if (originalDescriptor !== undefined) {
-      Object.defineProperty(process, "execPath", originalDescriptor)
-    } else {
-      Object.defineProperty(process, "execPath", { configurable: true, value: originalExecPath, writable: true })
-    }
-  }
+const defaultForceKillWindowsProcess: AgyForceKillWindowsProcess = (pid) => {
+  const helper = spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+    shell: false,
+    stdio: "ignore",
+    windowsHide: true,
+  })
+  helper.on("error", () => undefined)
+  helper.unref()
 }
 
 const ansiCsiPattern = new RegExp(String.raw`\x1b\[[0-?]*[ -/]*[@-~]`, "g")
@@ -142,6 +113,16 @@ const writeCancellationInterrupt = (child: AgyPtyProcess, platform: NodeJS.Platf
   child.write?.("\x03")
 }
 
+const forceKillWindowsChild = (child: AgyPtyProcess, forceKillWindowsProcess: AgyForceKillWindowsProcess) => {
+  const pid = (child as AgyPtyProcessWithPid).pid
+  if (typeof pid === "number" && Number.isInteger(pid) && pid > 0) {
+    forceKillWindowsProcess(pid)
+    return
+  }
+
+  child.kill()
+}
+
 export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAgyCommandDependencies = {}) => {
   const options = normalizeOptions(request.options)
   const agyModel = resolveAgyModel(request.modelId, options.modelMap)
@@ -163,9 +144,9 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
       const setTimer = dependencies.setTimeout ?? ((handler, timeoutMs) => setTimeout(handler, timeoutMs))
       const clearTimer = dependencies.clearTimeout ?? ((timer) => clearTimeout(timer))
       const platform = dependencies.platform ?? process.platform
-      const env = createAgyProcessEnv(invocation.options.env)
+      const forceKillWindowsProcess = dependencies.forceKillWindowsProcess ?? defaultForceKillWindowsProcess
+      const env = { ...process.env, ...invocation.options.env }
       const resolvedCommand = resolveAgyExecutable(invocation.command, env, platform)
-      const nodeExecutableForPtyHelper = getNodeExecutableForPtyHelper(env, platform)
 
       return await new Promise<AgyCommandResult>((resolve, reject) => {
         let child: AgyPtyProcess
@@ -231,7 +212,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
 
           forceKillSent = true
           if (platform === "win32") {
-            runWithNodeExecPathForPtyHelper(nodeExecutableForPtyHelper, () => child.kill())
+            forceKillWindowsChild(child, forceKillWindowsProcess)
             return
           }
 
