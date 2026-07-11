@@ -8,6 +8,7 @@ import type { AgyPtyDisposable, AgyPtyExitEvent, AgyPtyProcess, AgyPtySpawn, Agy
 import type { PromptFileTransport } from "./prompt-transport"
 
 class FakeAgyPty implements AgyPtyProcess {
+  pid?: number
   private dataListeners: Array<(data: string) => void> = []
   private exitListeners: Array<(event: AgyPtyExitEvent) => void> = []
   killSignals: Array<string | undefined> = []
@@ -610,6 +611,7 @@ describe("runAgyCommand", () => {
   test("force kills after cancellation grace without rejecting before PTY exit", async () => {
     const prompt = "hello force kill"
     const fake = createFakePtySpawn()
+    const processKillCalls: number[] = []
     const timers = createManualTimers()
     const abortController = new AbortController()
     const run = runAgyCommand(
@@ -626,6 +628,7 @@ describe("runAgyCommand", () => {
       {
         ptySpawn: fake.ptySpawn,
         platform: "linux",
+        processKill: (pid) => processKillCalls.push(pid),
         setTimeout: timers.setTimeout,
         clearTimeout: timers.clearTimeout,
         cancellationGraceMs: 25,
@@ -639,6 +642,7 @@ describe("runAgyCommand", () => {
 
     await expectPromisePending(run)
     expect(fake.calls[0].child.writeCalls).toEqual(["\x03"])
+    expect(processKillCalls).toEqual([])
     expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
     expect(fake.calls[0].child.disposeEvents).toEqual([])
 
@@ -689,9 +693,10 @@ describe("runAgyCommand", () => {
     expect(existsSync(tempDir)).toBe(false)
   })
 
-  test("Windows force kill calls child.kill(undefined) once", async () => {
-    const prompt = "hello windows force kill"
+  test("Windows force kill calls processKill for a valid child pid", async () => {
+    const prompt = "hello windows valid pid force kill"
     const fake = createFakePtySpawn()
+    const processKillCalls: number[] = []
     const timers = createManualTimers()
     const abortController = new AbortController()
     const run = runAgyCommand(
@@ -708,6 +713,50 @@ describe("runAgyCommand", () => {
       {
         ptySpawn: fake.ptySpawn,
         platform: "win32",
+        processKill: (pid) => processKillCalls.push(pid),
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        cancellationGraceMs: 25,
+        cancellationForceCleanupMs: 100,
+      },
+    )
+
+    await waitForSpawn(fake.calls)
+    fake.calls[0].child.pid = 12345
+    const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", prompt)
+    abortController.abort()
+    timers.fire(25)
+
+    await expectPromisePending(run)
+    expect(processKillCalls).toEqual([12345])
+    expect(fake.calls[0].child.killSignals).toEqual([])
+    expect(existsSync(tempDir)).toBe(true)
+    fake.calls[0].child.exit(1)
+
+    await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
+    expect(existsSync(tempDir)).toBe(false)
+  })
+
+  test("Windows force kill falls back to child.kill(undefined) when child pid is invalid", async () => {
+    const fake = createFakePtySpawn()
+    const processKillCalls: number[] = []
+    const timers = createManualTimers()
+    const abortController = new AbortController()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello windows invalid pid force kill",
+        options: {
+          command: "./fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        abortSignal: abortController.signal,
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "win32",
+        processKill: (pid) => processKillCalls.push(pid),
         setTimeout: timers.setTimeout,
         clearTimeout: timers.clearTimeout,
         cancellationGraceMs: 25,
@@ -719,7 +768,85 @@ describe("runAgyCommand", () => {
     abortController.abort()
     timers.fire(25)
 
+    expect(processKillCalls).toEqual([])
     expect(fake.calls[0].child.killSignals).toEqual([undefined])
+    fake.calls[0].child.exit(1)
+    await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
+  })
+
+  test("Windows force kill falls back to child.kill(undefined) when processKill fails without ESRCH", async () => {
+    const fake = createFakePtySpawn()
+    const timers = createManualTimers()
+    const abortController = new AbortController()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello windows direct kill failure",
+        options: {
+          command: "./fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        abortSignal: abortController.signal,
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "win32",
+        processKill: () => {
+          throw new Error("access denied")
+        },
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        cancellationGraceMs: 25,
+        cancellationForceCleanupMs: 100,
+      },
+    )
+
+    await waitForSpawn(fake.calls)
+    fake.calls[0].child.pid = 12345
+    abortController.abort()
+    timers.fire(25)
+
+    expect(fake.calls[0].child.killSignals).toEqual([undefined])
+    fake.calls[0].child.exit(1)
+    await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
+  })
+
+  test("Windows force kill ignores ESRCH processKill failures without child.kill fallback", async () => {
+    const fake = createFakePtySpawn()
+    const timers = createManualTimers()
+    const abortController = new AbortController()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello windows esrch direct kill",
+        options: {
+          command: "./fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        abortSignal: abortController.signal,
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "win32",
+        processKill: () => {
+          throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" })
+        },
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        cancellationGraceMs: 25,
+        cancellationForceCleanupMs: 100,
+      },
+    )
+
+    await waitForSpawn(fake.calls)
+    fake.calls[0].child.pid = 12345
+    abortController.abort()
+    timers.fire(25)
+
+    await expectPromisePending(run)
+    expect(fake.calls[0].child.killSignals).toEqual([])
     fake.calls[0].child.exit(1)
     await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
   })

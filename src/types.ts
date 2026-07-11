@@ -39,6 +39,7 @@ export type RunAgyCommandDependencies = {
   ptySpawn?: AgyPtySpawn
   loadNodePty?: () => Promise<AgyPtyModule>
   createPromptFileTransport?: (prompt: string) => Promise<PromptFileTransport>
+  processKill?: (pid: number) => void
   setTimeout?: AgySetTimeout
   clearTimeout?: AgyClearTimeout
   platform?: NodeJS.Platform

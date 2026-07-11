@@ -47,6 +47,7 @@ export type AgyPtyDisposable = {
 }
 
 export type AgyPtyProcess = {
+  pid?: number
   onData(listener: (data: string) => void): AgyPtyDisposable
   onExit(listener: (event: AgyPtyExitEvent) => void): AgyPtyDisposable
   write?: (data: string) => void

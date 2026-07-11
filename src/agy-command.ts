@@ -80,6 +80,16 @@ const getWindowsInputSocket = (child: AgyPtyProcess) => {
 const canWriteToSocket = (inputSocket: WritablePtySocket) =>
   inputSocket.closed !== true && inputSocket.destroyed !== true && inputSocket.writableEnded !== true && inputSocket.writable !== false
 
+const isEsrchError = (error: unknown) => {
+  if (!(error instanceof Error)) {
+    return false
+  }
+
+  return ["code", "name", "message"].some((property) => String((error as Error & Record<string, unknown>)[property]).includes("ESRCH"))
+}
+
+const isValidProcessKillPid = (pid: number | undefined): pid is number => typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid !== process.pid
+
 const writeCancellationInterrupt = (child: AgyPtyProcess, platform: NodeJS.Platform) => {
   if (platform === "win32") {
     const ptyChild = child as AgyPtyProcessWithInputSocket
@@ -121,6 +131,9 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
       const setTimer = dependencies.setTimeout ?? ((handler, timeoutMs) => setTimeout(handler, timeoutMs))
       const clearTimer = dependencies.clearTimeout ?? ((timer) => clearTimeout(timer))
       const platform = dependencies.platform ?? process.platform
+      const processKill = dependencies.processKill ?? ((pid: number) => {
+        process.kill(pid)
+      })
       const env = { ...process.env, ...invocation.options.env }
       const resolvedCommand = resolveAgyExecutable(invocation.command, env, platform)
 
@@ -188,6 +201,18 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
 
           forceKillSent = true
           if (platform === "win32") {
+            const childPid = child.pid
+            if (isValidProcessKillPid(childPid)) {
+              try {
+                processKill(childPid)
+              } catch (error) {
+                if (!isEsrchError(error)) {
+                  child.kill()
+                }
+              }
+              return
+            }
+
             child.kill()
             return
           }
