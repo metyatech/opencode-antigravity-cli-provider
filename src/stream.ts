@@ -5,8 +5,6 @@ import type { LanguageModelV3StreamPart, RunAgyCommandDependencies, RunAgyComman
 
 const textStreamId = "antigravity-cli-text"
 
-const isAbortError = (error: unknown) => error instanceof Error && error.name === "AbortError"
-
 export const createAgyTextStream = (request: RunAgyCommandRequest, dependencies: RunAgyCommandDependencies = {}) => {
   let abortController: AbortController | undefined
   let removeAbortListener: () => void = () => undefined
@@ -83,7 +81,7 @@ export const createAgyTextStream = (request: RunAgyCommandRequest, dependencies:
         () => undefined,
         (error: unknown) => {
           const cleanupError = getPromptCleanupError(error)
-          if (isAbortError(error) && cleanupError !== undefined) {
+          if (cleanupError !== undefined) {
             return Promise.reject(cleanupError)
           }
 

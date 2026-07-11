@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import path from "node:path"
+import { PromptCleanupError } from "./errors"
 import { createAgyTextStream } from "./stream"
 import type { AgyPtyDisposable, AgyPtyExitEvent, AgyPtyProcess, AgyPtySpawn, AgyPtySpawnOptions } from "./model-discovery"
 import type { LanguageModelV3StreamPart } from "./types"
@@ -339,6 +340,68 @@ describe("createAgyTextStream", () => {
     fake.calls[0].child.exit(1)
 
     await expect(cancelPromise).rejects.toBe(cleanupError)
+  })
+
+  test("reader.cancel waits for and rejects direct cleanup failure after command success", async () => {
+    let markSpawned: () => void = () => undefined
+    const spawned = new Promise<void>((resolve) => {
+      markSpawned = resolve
+    })
+    let markCleanupStarted: () => void = () => undefined
+    const cleanupStarted = new Promise<void>((resolve) => {
+      markCleanupStarted = resolve
+    })
+    let rejectCleanup: (error: unknown) => void = () => undefined
+    const cleanupError = new PromptCleanupError("/tmp/opencode-antigravity-prompt-direct-stream", new Error("rm still busy"))
+    const fake = createFakePtySpawn(() => markSpawned())
+    const unhandledRejections: unknown[] = []
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason)
+    }
+    process.on("unhandledRejection", onUnhandledRejection)
+
+    try {
+      const stream = createAgyTextStream(
+        {
+          modelId: "gemini-3-5-flash-medium",
+          prompt: "hello direct cleanup race",
+          options: {
+            command: "fake-agy",
+            timeoutMs: 1_000,
+            modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+          },
+        },
+        {
+          ptySpawn: fake.ptySpawn,
+          platform: "linux",
+          createPromptFileTransport: async () =>
+            createInjectedPromptTransport(
+              () =>
+                new Promise<void>((_, reject) => {
+                  rejectCleanup = reject
+                  markCleanupStarted()
+                }),
+            ),
+        },
+      )
+      const reader = stream.getReader()
+
+      await reader.read()
+      await spawned
+      fake.calls[0].child.writeData("OK")
+      fake.calls[0].child.exit(0)
+      await cleanupStarted
+      const cancelPromise = reader.cancel()
+
+      await expectPromisePending(cancelPromise)
+      rejectCleanup(cleanupError)
+
+      await expect(cancelPromise).rejects.toBe(cleanupError)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(unhandledRejections).toEqual([])
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection)
+    }
   })
 
   test("cancel after child exit resolves without unhandled rejection", async () => {

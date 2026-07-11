@@ -5,6 +5,17 @@ export class AntigravityCliProviderError extends Error {
   }
 }
 
+export class PromptCleanupError extends AntigravityCliProviderError {
+  readonly tempDir: string
+
+  constructor(tempDir: string, cause: unknown) {
+    const causeMessage = cause instanceof Error ? cause.message : String(cause)
+    super(`Prompt cleanup failed for ${tempDir}. ${causeMessage}`, { cause })
+    this.name = "PromptCleanupError"
+    this.tempDir = tempDir
+  }
+}
+
 export type PromptCleanupErrorCarrier = Error & {
   cleanupError?: Error
 }
@@ -32,6 +43,10 @@ export const attachPromptCleanupError = (primaryError: unknown, cleanupError: un
 export const getPromptCleanupError = (error: unknown) => {
   if (!(error instanceof Error)) {
     return undefined
+  }
+
+  if (error instanceof PromptCleanupError) {
+    return error
   }
 
   const carrier: PromptCleanupErrorCarrier = error

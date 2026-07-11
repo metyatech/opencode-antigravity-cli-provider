@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { PromptCleanupError } from "./errors"
 
 export type PromptFileTransport = {
   tempDir: string
@@ -38,13 +39,7 @@ const isTransientCleanupError = (error: unknown) => {
   return code !== undefined && transientCleanupErrorCodes.has(code)
 }
 
-const toCleanupError = (tempDir: string, error: unknown) => {
-  if (error instanceof Error) {
-    return new Error(`Prompt cleanup failed for ${tempDir}. ${error.message}`, { cause: error })
-  }
-
-  return new Error(`Prompt cleanup failed for ${tempDir}. ${String(error)}`, { cause: error })
-}
+const toCleanupError = (tempDir: string, error: unknown) => new PromptCleanupError(tempDir, error)
 
 const stillPresentError = () => new Error("Directory still exists after fs.rm.")
 

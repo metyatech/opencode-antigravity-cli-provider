@@ -3,6 +3,7 @@ import { existsSync, rmSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { PromptCleanupError } from "./errors"
 import { createPromptFileTransport } from "./prompt-transport"
 import type { Stats } from "node:fs"
 
@@ -198,10 +199,11 @@ describe("createPromptFileTransport", () => {
 
   test("persistent cleanup failure throws", async () => {
     let rmCalls = 0
+    const rmError = nodeError("EPERM")
     const transport = await createPromptFileTransport("hello", {
       rm: async () => {
         rmCalls += 1
-        throw nodeError("EPERM")
+        throw rmError
       },
       stat: async () => statSuccess,
       delay: async () => undefined,
@@ -210,7 +212,19 @@ describe("createPromptFileTransport", () => {
     })
 
     try {
-      await expect(transport.cleanup()).rejects.toThrow("Prompt cleanup failed")
+      try {
+        await transport.cleanup()
+        throw new Error("Expected cleanup to fail")
+      } catch (error) {
+        expect(error).toBeInstanceOf(PromptCleanupError)
+        expect(error).toMatchObject({
+          name: "PromptCleanupError",
+          tempDir: transport.tempDir,
+          cause: rmError,
+        })
+        expect(error).toBeInstanceOf(Error)
+        expect((error as Error).message).toContain(transport.tempDir)
+      }
     } finally {
       rmSync(transport.tempDir, { recursive: true, force: true })
     }

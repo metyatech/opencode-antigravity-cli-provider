@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import {
   AntigravityCliInteractiveSetupError,
+  PromptCleanupError,
+  attachPromptCleanupError,
   createAbortError,
   createExitError,
   createInteractiveSetupError,
   createNoOutputError,
+  getPromptCleanupError,
   isInteractivePrompt,
   summarizeStderr,
 } from "./errors"
@@ -52,5 +55,29 @@ describe("error helpers", () => {
     expect(createExitError(2, "boom").message).toBe("Antigravity CLI failed with exit code 2. boom")
     expect(createNoOutputError("").message).toBe("Antigravity CLI returned no output.")
     expect(createAbortError().name).toBe("AbortError")
+  })
+
+  test("returns a direct prompt cleanup error", () => {
+    const cause = new Error("rm failed")
+    const cleanupError = new PromptCleanupError("/tmp/opencode-antigravity-prompt-direct", cause)
+
+    expect(getPromptCleanupError(cleanupError)).toBe(cleanupError)
+    expect(cleanupError.name).toBe("PromptCleanupError")
+    expect(cleanupError.message).toContain("/tmp/opencode-antigravity-prompt-direct")
+    expect(cleanupError.cause).toBe(cause)
+  })
+
+  test("returns cleanup errors attached to abort errors", () => {
+    const abortError = createAbortError()
+    const cleanupError = new PromptCleanupError("/tmp/opencode-antigravity-prompt-attached", new Error("cleanup failed"))
+
+    const attached = attachPromptCleanupError(abortError, cleanupError)
+
+    expect(attached).toBe(abortError)
+    expect(getPromptCleanupError(attached)).toBe(cleanupError)
+  })
+
+  test("returns undefined for ordinary errors without cleanup failure", () => {
+    expect(getPromptCleanupError(new Error("ordinary"))).toBeUndefined()
   })
 })
