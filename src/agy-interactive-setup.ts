@@ -16,17 +16,48 @@ const trimPromptPunctuation = (line: string) => line.trim().replace(/[.!?！。�
 
 export const isInteractivePrompt = (text: string) => {
   const line = trimPromptPunctuation(normalizeAgyInteractiveSetupText(text))
-  return /^(?:not signed in|you are not signed in|please sign in to continue|please login to continue|login to continue|authorization url:\s+\S+|do you trust this folder|trust this folder|this action requires permission|permission required(?: before use)?|select a theme|accept the terms|press enter to continue|↑\/↓ navigate)$/iu.test(line)
+  return /^(?:not signed in|you are not signed in|please sign in to continue|please login to continue|login to continue|authorization url:\s+\S+|do you trust this folder|trust this folder|requires permission|this action requires permission|permission required(?: before use)?|select a theme|accept the terms|press enter to continue|↑\/↓ navigate)$/iu.test(line)
 }
 
 export type AgyInteractiveSetupDetector = {
-  push(chunk: string): string | undefined
+  push(chunk: string): AgyInteractivePromptCandidate | undefined
+  clear(): void
   disable(): void
+}
+
+export type AgyInteractivePromptCandidate = {
+  line: string
+}
+
+const terminalFrameResetPattern = /\x1b\[(?:2J|H|K|2K)/
+
+const incompleteAnsiSuffix = (text: string) => {
+  const escapeIndex = text.lastIndexOf("\u001b")
+  if (escapeIndex < 0) {
+    return ""
+  }
+
+  const suffix = text.slice(escapeIndex)
+  if (suffix === "\u001b") {
+    return suffix
+  }
+
+  if (suffix.startsWith("\u001b]") && !suffix.includes("\u0007") && !suffix.includes("\u001b\\")) {
+    return suffix
+  }
+
+  if (suffix.startsWith("\u001b[") && !/^\u001b\[[0-?]*[ -/]*[@-~]/.test(suffix)) {
+    return suffix
+  }
+
+  return ""
 }
 
 export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: number } = {}): AgyInteractiveSetupDetector => {
   const maxBufferSize = Math.max(1, options.maxBufferSize ?? defaultMaxBufferSize)
-  let buffer = ""
+  let lineBuffer = ""
+  let ansiCarry = ""
+  let currentCandidate: AgyInteractivePromptCandidate | undefined
   let enabled = true
 
   return {
@@ -35,19 +66,45 @@ export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: num
         return undefined
       }
 
-      buffer = `${buffer}${chunk}`.slice(-maxBufferSize)
-      const normalized = normalizeAgyInteractiveSetupText(buffer)
-      const lines = normalized.split("\n")
-      for (const line of lines) {
-        if (isInteractivePrompt(line)) {
-          return line.trim()
-        }
+      if (terminalFrameResetPattern.test(chunk)) {
+        lineBuffer = ""
+        currentCandidate = undefined
       }
-      return undefined
+
+      const rawChunk = `${ansiCarry}${chunk}`
+      ansiCarry = incompleteAnsiSuffix(rawChunk).slice(-maxBufferSize)
+      const completeChunk = ansiCarry.length === 0 ? rawChunk : rawChunk.slice(0, -ansiCarry.length)
+      lineBuffer = `${lineBuffer}${normalizeAgyInteractiveSetupText(completeChunk)}`.slice(-maxBufferSize)
+      const normalized = lineBuffer
+      const lines = normalized.split("\n")
+      const trailingLine = lines.pop() ?? ""
+      for (const line of lines) {
+        const trimmedLine = line.trim()
+        if (trimmedLine.length === 0) {
+          continue
+        }
+
+        currentCandidate = isInteractivePrompt(trimmedLine) ? { line: trimmedLine } : undefined
+      }
+
+      const trimmedTrailingLine = trailingLine.trim()
+      if (trimmedTrailingLine.length > 0) {
+        currentCandidate = isInteractivePrompt(trimmedTrailingLine) ? { line: trimmedTrailingLine } : undefined
+      }
+
+      lineBuffer = trailingLine.slice(-maxBufferSize)
+      return currentCandidate
+    },
+    clear() {
+      lineBuffer = ""
+      ansiCarry = ""
+      currentCandidate = undefined
     },
     disable() {
       enabled = false
-      buffer = ""
+      lineBuffer = ""
+      ansiCarry = ""
+      currentCandidate = undefined
     },
   }
 }

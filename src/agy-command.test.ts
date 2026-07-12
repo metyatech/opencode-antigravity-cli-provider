@@ -138,6 +138,13 @@ const waitForWrite = async (child: FakeAgyPty) => {
   expect(child.writeCalls).toContain("\x03")
 }
 
+const waitForManualTimer = async (timers: ReturnType<typeof createManualTimers>, timeoutMs: number) => {
+  for (let attempt = 0; attempt < 20 && !timers.timers.some((timer) => timer.timeoutMs === timeoutMs && !timer.cleared); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  timers.fire(timeoutMs)
+}
+
 const expectPromisePending = async <T>(promise: Promise<T>) => {
   let settled = false
   promise.then(
@@ -309,6 +316,146 @@ describe("runAgyCommand", () => {
     expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
   })
 
+  test("resolves a two-line normal answer ending with an exact prompt line", async () => {
+    const onStdoutChunks: string[] = []
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("説明文です\r\nPlease login to continue")
+        child.exit(0)
+      })
+    })
+
+    const result = await runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "two-line normal answer",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+        onStdout: (chunk) => onStdoutChunks.push(chunk),
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux" },
+    )
+
+    expect(result.stdout).toBe("説明文です\nPlease login to continue")
+    expect(onStdoutChunks.join("")).toBe(result.stdout)
+    expect(fake.calls[0].child.writeCalls).toEqual([])
+    expect(fake.calls[0].child.killSignals).toEqual([])
+    expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
+  })
+
+  test("resolves a one-line normal answer that is itself an exact prompt", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("Please login to continue")
+        child.exit(0)
+      })
+    })
+
+    const result = await runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "one-line normal answer",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux" },
+    )
+
+    expect(result.stdout).toBe("Please login to continue")
+    expect(fake.calls[0].child.writeCalls).toEqual([])
+  })
+
+  test.each([
+    ["three-line", "Welcome\r\nPlease login to continue\r\nPress Enter to continue"],
+    ["two-line", "Welcome\r\nPlease login to continue"],
+  ])("confirms a %s genuine setup screen without parser delta coupling", async (_name, screen) => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => child.writeData(screen))
+    })
+    const timers = createManualTimers()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "genuine setup screen",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux", setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    )
+
+    await waitForSpawn(fake.calls)
+    await expectPromisePending(run)
+    expect(fake.calls[0].child.writeCalls).toEqual([])
+    await waitForManualTimer(timers, 750)
+    await waitForWrite(fake.calls[0].child)
+    await expectPromisePending(run)
+    fake.calls[0].child.exit(1)
+    await expect(run).rejects.toThrow(screen.includes("Press Enter") ? "Press Enter to continue" : "Please login to continue")
+    expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
+  })
+
+  test("discards a prompt candidate when a later chunk continues the answer", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("Please login to continue")
+        child.writeData("\r\nこれは回答中の引用です\r\nEND_OF_FALSE_POSITIVE_TEST")
+        child.exit(0)
+      })
+    })
+    const timers = createManualTimers()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "candidate followed by output",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux", setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    )
+
+    const result = await run
+    expect(result.stdout).toContain("END_OF_FALSE_POSITIVE_TEST")
+    expect(fake.calls[0].child.writeCalls).toEqual([])
+    expect(timers.timers.filter((timer) => timer.timeoutMs === 750 && !timer.cleared)).toHaveLength(0)
+  })
+
+  test("does not treat a prompt line followed by continuation in one chunk as setup", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("説明文です\r\nPlease login to continue\r\nこれは回答の続きです\r\nEND_OF_FALSE_POSITIVE_TEST")
+        child.exit(0)
+      })
+    })
+
+    const result = await runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "same chunk continuation",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux" },
+    )
+
+    expect(result.stdout).toContain("END_OF_FALSE_POSITIVE_TEST")
+    expect(fake.calls[0].child.writeCalls).toEqual([])
+  })
+
+  test("prefers a confirmed setup diagnosis when a pending prompt is followed by nonzero exit", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("Please login to continue")
+        child.exit(1)
+      })
+    })
+    const timers = createManualTimers()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "pending setup nonzero",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux", setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    )
+
+    await expect(run).rejects.toThrow("Please login to continue")
+  })
+
   test("does not cancel when the answer and quoted patterns share one PTY chunk", async () => {
     const fake = createFakePtySpawn((child) => {
       queueMicrotask(() => {
@@ -358,16 +505,18 @@ describe("runAgyCommand", () => {
         child.writeData("in to continue")
       })
     })
+    const timers = createManualTimers()
     const run = runAgyCommand(
       {
         modelId: "gemini-3-5-flash-medium",
         prompt: "split setup",
         options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
       },
-      { ptySpawn: fake.ptySpawn, platform: "linux" },
+      { ptySpawn: fake.ptySpawn, platform: "linux", setTimeout: (handler, timeoutMs) => timers.setTimeout(handler, timeoutMs), clearTimeout: timers.clearTimeout },
     )
 
     await waitForSpawn(fake.calls)
+    await waitForManualTimer(timers, 750)
     await waitForWrite(fake.calls[0].child)
     await expectPromisePending(run)
     expect(fake.calls[0].child.writeCalls).toEqual(["\x03"])
@@ -634,6 +783,8 @@ describe("runAgyCommand", () => {
     await waitForSpawn(fake.calls)
     const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", prompt)
     await expectPromisePending(run)
+    timers.fire(750)
+    await waitForWrite(fake.calls[0].child)
     expect(fake.calls[0].child.writeCalls).toEqual(["\x03"])
     expect(fake.calls[0].child.killSignals).toEqual([])
     expect(fake.calls[0].child.disposeEvents).toEqual([])

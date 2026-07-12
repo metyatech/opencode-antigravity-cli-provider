@@ -41,6 +41,7 @@ const ansiCsiPattern = new RegExp(String.raw`\x1b\[[0-?]*[ -/]*[@-~]`, "g")
 const ansiOscPattern = new RegExp(String.raw`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`, "g")
 const belPattern = new RegExp(String.raw`\x07`, "g")
 const residualControlPattern = new RegExp(String.raw`[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]`, "g")
+const defaultInteractiveSetupConfirmationMs = 750
 
 export const sanitizeAgyGenerationPtyOutput = (output: string): string => {
   const sanitized = output
@@ -172,7 +173,8 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
         let finalizationStarted = false
         let cleanupCompleted = false
         const interactiveSetupDetector = createAgyInteractiveSetupDetector()
-        let answerStreamingStarted = false
+        let interactiveSetupConfirmationTimer: ReturnType<typeof setTimer> | undefined
+        let pendingInteractivePrompt: string | undefined
 
         const clearMainTimeout = () => {
           if (timeout !== undefined) {
@@ -195,6 +197,15 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           }
         }
 
+        const clearInteractiveSetupConfirmation = () => {
+          if (interactiveSetupConfirmationTimer !== undefined) {
+            clearTimer(interactiveSetupConfirmationTimer)
+            interactiveSetupConfirmationTimer = undefined
+          }
+          pendingInteractivePrompt = undefined
+          interactiveSetupDetector.clear()
+        }
+
         const cleanup = () => {
           if (cleanupCompleted) {
             return
@@ -204,6 +215,8 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           clearMainTimeout()
           clearForceKillTimer()
           clearFinalCleanupTimer()
+          clearInteractiveSetupConfirmation()
+          interactiveSetupDetector.disable()
           request.abortSignal?.removeEventListener("abort", abort)
           releaseAgyPtyProcess(child, platform)
           for (const disposable of disposables) {
@@ -275,6 +288,30 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           }, dependencies.cancellationForceCleanupMs ?? 5_000)
         }
 
+        const updateInteractiveSetupCandidate = (candidate: string | undefined) => {
+          if (candidate === undefined) {
+            if (pendingInteractivePrompt !== undefined) {
+              clearInteractiveSetupConfirmation()
+            }
+            return
+          }
+
+          if (pendingInteractivePrompt === candidate) {
+            return
+          }
+
+          if (interactiveSetupConfirmationTimer !== undefined) {
+            clearTimer(interactiveSetupConfirmationTimer)
+          }
+          pendingInteractivePrompt = candidate
+          interactiveSetupConfirmationTimer = setTimer(() => {
+            interactiveSetupConfirmationTimer = undefined
+            if (pendingInteractivePrompt === candidate && !settled && !cancellationRequested) {
+              requestCancellation(createInteractiveSetupError(candidate))
+            }
+          }, dependencies.interactiveSetupConfirmationMs ?? defaultInteractiveSetupConfirmationMs)
+        }
+
         const failTerminalOutput = (error: unknown) => {
           if (terminalOutputError !== undefined || settled) {
             return
@@ -322,6 +359,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
             return
           }
 
+          const pendingPrompt = pendingInteractivePrompt
           settled = true
           cleanup()
 
@@ -351,6 +389,10 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           }
 
           if (exitCode !== 0) {
+            if (pendingPrompt !== undefined) {
+              reject(createInteractiveSetupError(pendingPrompt))
+              return
+            }
             reject(createExitError(exitCode, sanitizeAgyGenerationPtyOutput(output)))
             return
           }
@@ -371,10 +413,6 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
             return
           }
 
-          if (!answerStreamingStarted && chunk.length > 0) {
-            answerStreamingStarted = true
-            interactiveSetupDetector.disable()
-          }
           request.onStdout?.(chunk)
         }, platform)
 
@@ -394,13 +432,9 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
 
           output += text
           terminalWriteChain = terminalWriteChain.then(async () => {
+            const candidate = interactiveSetupDetector.push(text)
+            updateInteractiveSetupCandidate(candidate?.line)
             await terminalOutputParser.push(text)
-            if (!answerStreamingStarted) {
-              const prompt = interactiveSetupDetector.push(text)
-              if (prompt !== undefined) {
-                requestCancellation(createInteractiveSetupError(prompt))
-              }
-            }
           }).catch((error: unknown) => {
             failTerminalOutput(error)
           })

@@ -344,7 +344,7 @@ export const discoverAgyModels = async (options: DiscoverAgyModelsOptions = {}, 
       output += text
       const prompt = interactiveSetupDetector.push(text)
       if (prompt !== undefined) {
-        killAndFail(createInteractiveSetupError(prompt))
+        killAndFail(createInteractiveSetupError(prompt.line))
       }
     }))
 

@@ -45,6 +45,7 @@ export type RunAgyCommandDependencies = {
   platform?: NodeJS.Platform
   cancellationGraceMs?: number
   cancellationForceCleanupMs?: number
+  interactiveSetupConfirmationMs?: number
   createAgyTerminalOutputParser?: (onDelta: (delta: string) => void, platform: NodeJS.Platform) => AgyTerminalOutputParser
   createAgyProgressMonitor?: (options: AgyProgressMonitorFactoryOptions) => AgyProgressMonitor
 }

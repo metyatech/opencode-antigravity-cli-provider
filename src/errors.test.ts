@@ -19,6 +19,7 @@ describe("interactive setup detection", () => {
       "Authorization URL: https://example.test",
       "Do you trust this folder?",
       "This action requires permission",
+      "requires permission",
       "Select a theme",
       "accept the terms",
       "press enter to continue",
@@ -39,6 +40,7 @@ describe("interactive setup detection", () => {
       'The code detects "press enter" messages.',
       "Use the authorization URL pattern for detection.",
       'isInteractivePrompt("Please login to continue")',
+      "The CLI may display: Please login to continue",
     ]) {
       expect(isInteractivePrompt(text)).toBe(false)
     }
