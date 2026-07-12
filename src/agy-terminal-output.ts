@@ -5,6 +5,11 @@ import type { AgyTerminalOutputParser } from "./types"
 const progressScreenClear = "\u001b[2J"
 const progressScreenHome = "\u001b[H"
 
+// The observed agy 1.1.1 redraw changed one logical answer line after text
+// streaming had started. Keep that line and one adjacent line mutable so a
+// redraw cannot invalidate text already sent to OpenCode.
+const mutableTailLineCount = 2
+
 const getLogicalLines = (terminal: Terminal) => {
   const lines: string[] = []
   const buffer = terminal.buffer.active
@@ -37,6 +42,14 @@ const firstVisibleText = (lines: string[]) => {
   return lines.slice(firstVisibleIndex).join("\n")
 }
 
+const stablePrefixForLines = (lines: string[], tailLineCount: number) => {
+  if (lines.length <= tailLineCount) {
+    return ""
+  }
+
+  return `${lines.slice(0, -tailLineCount).join("\n")}\n`
+}
+
 export const buildAgyTerminalOptions = (platform: NodeJS.Platform, osRelease = os.release()) => ({
     cols: 120,
     rows: 30,
@@ -50,7 +63,7 @@ export const buildAgyTerminalOptions = (platform: NodeJS.Platform, osRelease = o
 export const createAgyTerminalOutputParser = (onDelta: (delta: string) => void, platform: NodeJS.Platform): AgyTerminalOutputParser => {
   const terminal = new Terminal(buildAgyTerminalOptions(platform))
   let writeChain = Promise.resolve()
-  let previousAnswer = ""
+  let committedPrefix = ""
   let answerStarted = false
   let excludeProgressLine = false
   let disposed = false
@@ -67,25 +80,48 @@ export const createAgyTerminalOutputParser = (onDelta: (delta: string) => void, 
           const withoutProgressLine = [...lines]
           withoutProgressLine.splice(firstVisibleIndex, 1)
           const withoutProgressCandidate = firstVisibleText(withoutProgressLine)
-          if (!answerStarted || (!fullCandidate.startsWith(previousAnswer) && withoutProgressCandidate.startsWith(previousAnswer))) {
+          if (!answerStarted || (!fullCandidate.startsWith(committedPrefix) && withoutProgressCandidate.startsWith(committedPrefix))) {
             candidate = withoutProgressCandidate
           }
         } else if (!finalize) {
-          return ""
+          candidate = ""
         }
       }
     }
 
-    if (candidate.length === 0) {
+    if (candidate.length === 0 && !finalize) {
       return ""
     }
 
-    if (!candidate.startsWith(previousAnswer)) {
+    if (finalize) {
+      if (candidate.length === 0 || (candidate.length < committedPrefix.length && committedPrefix.startsWith(candidate))) {
+        return committedPrefix
+      }
+
+      if (!candidate.startsWith(committedPrefix)) {
+        throw new Error("Antigravity CLI terminal output became non-monotonic after streaming started.")
+      }
+
+      const suffix = candidate.slice(committedPrefix.length)
+      committedPrefix = candidate
+      if (suffix.length > 0) {
+        answerStarted = true
+        onDelta(suffix)
+      }
+      return candidate
+    }
+
+    const stablePrefix = stablePrefixForLines(candidate.split("\n"), mutableTailLineCount)
+    if (stablePrefix.length < committedPrefix.length && committedPrefix.startsWith(stablePrefix)) {
+      return committedPrefix
+    }
+
+    if (!stablePrefix.startsWith(committedPrefix)) {
       throw new Error("Antigravity CLI terminal output became non-monotonic after streaming started.")
     }
 
-    const suffix = candidate.slice(previousAnswer.length)
-    previousAnswer = candidate
+    const suffix = stablePrefix.slice(committedPrefix.length)
+    committedPrefix = stablePrefix
     if (suffix.length > 0) {
       answerStarted = true
       onDelta(suffix)

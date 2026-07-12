@@ -45,7 +45,35 @@ describe("createAgyTerminalOutputParser", () => {
     await parser.push("長い回答")
     await parser.push("です。\r\n次の行")
     await expect(parser.finish()).resolves.toBe("長い回答です。\n次の行")
-    expect(deltas).toEqual(["長い回答", "です。\n次の行"])
+    expect(deltas).toEqual(["長い回答です。\n次の行"])
+    parser.dispose()
+  })
+
+  test("absorbs a terminal redraw in the mutable tail without duplicate deltas", async () => {
+    const deltas: string[] = []
+    const parser = createAgyTerminalOutputParser((delta) => deltas.push(delta), "linux")
+    await parser.push("fixed\r\nold-tail\r\nopen")
+    expect(deltas).toEqual(["fixed\n"])
+
+    await parser.push(`${esc}[1A${esc}[1G${esc}[2Knew-tail`)
+    expect(deltas).toEqual(["fixed\n"])
+
+    await parser.push(`${esc}[1B${esc}[1G\r\nfourth`)
+    expect(deltas).toEqual(["fixed\n", "new-tail\n"])
+
+    const final = await parser.finish()
+    expect(final).toBe("fixed\nnew-tail\nopen\nfourth")
+    expect(deltas.join("")).toBe(final)
+    parser.dispose()
+  })
+
+  test("retains the last committed answer when redraw cleanup leaves an empty terminal", async () => {
+    const deltas: string[] = []
+    const parser = createAgyTerminalOutputParser((delta) => deltas.push(delta), "linux")
+    await parser.push("確定行\n末尾\n表示中")
+    await parser.push(`${esc}[2J${esc}[H`)
+    await expect(parser.finish()).resolves.toBe("確定行\n")
+    expect(deltas).toEqual(["確定行\n"])
     parser.dispose()
   })
 
@@ -71,8 +99,8 @@ describe("createAgyTerminalOutputParser", () => {
 
   test("fails closed on non-monotonic output after streaming begins", async () => {
     const parser = createAgyTerminalOutputParser(() => undefined, "linux")
-    await parser.push("first")
-    await expect(parser.push(`${esc}[2J${esc}[Hsecond`)).rejects.toThrow("Antigravity CLI terminal output became non-monotonic after streaming started.")
+    await parser.push("committed\nstable\nvolatile")
+    await expect(parser.push(`${esc}[2J${esc}[Hchanged\nstable\nvolatile`)).rejects.toThrow("Antigravity CLI terminal output became non-monotonic after streaming started.")
     parser.dispose()
   })
 })
