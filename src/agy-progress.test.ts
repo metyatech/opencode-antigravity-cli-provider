@@ -46,13 +46,12 @@ describe("createAgyProgressMonitor", () => {
       await monitor.stop()
       expect(messages).toEqual([
         "Antigravity CLIを起動しています",
-        "Starting new conversation",
-        "Created conversation",
-        "→ リクエストを送信しています",
-        "→ 応答を生成しています",
-        "→ ファイルを読み取っています",
-        "→ ツールを実行しています",
+        "リクエストを送信しています",
+        "応答を生成しています",
+        "ファイルを読み取っています",
+        "ツールを実行しています",
       ])
+      expect(messages.every((message) => !/Starting|Created|Sending|Streaming|streamGenerate|Tool confirmation|ReadFile/.test(message))).toBe(true)
     })
   })
 
@@ -76,6 +75,25 @@ describe("createAgyProgressMonitor", () => {
       expect(messages.join("\n")).not.toContain("secret")
       expect(messages.join("\n")).not.toContain("private")
       expect(messages.join("\n")).not.toContain("token")
+    })
+  })
+
+  test("dispose stops scheduling and suppresses callbacks idempotently", async () => {
+    await withLogFile(async (logFile) => {
+      const messages: string[] = []
+      const errors: Error[] = []
+      const monitor = createAgyProgressMonitor({
+        logFile,
+        onProgress: (message) => messages.push(message),
+        onError: (error) => errors.push(error),
+      }, { intervalMs: 1 })
+      monitor.start()
+      monitor.dispose()
+      monitor.dispose()
+      await appendFile(logFile, "Starting new conversation\n")
+      await monitor.stop()
+      expect(messages).toEqual([])
+      expect(errors).toEqual([])
     })
   })
 })

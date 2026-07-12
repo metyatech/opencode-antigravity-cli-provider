@@ -67,6 +67,7 @@ export interface AgyTerminalOutputParser {
 export interface AgyProgressMonitor {
   start(): void
   stop(): Promise<void>
+  dispose(): void
 }
 
 export type AgyProgressMonitorFactoryOptions = {

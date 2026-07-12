@@ -185,6 +185,7 @@ describe("createAgyTextStream", () => {
           createAgyProgressMonitor: ({ onProgress }): AgyProgressMonitor => ({
             start: () => onProgress("Antigravity CLIを起動しています"),
             stop: async () => onProgress("late progress"),
+            dispose: () => undefined,
           }),
         },
       ),

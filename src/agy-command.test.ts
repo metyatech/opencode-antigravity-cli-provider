@@ -6,6 +6,7 @@ import { buildAgyCommandInvocation, runAgyCommand, sanitizeAgyGenerationPtyOutpu
 import { AntigravityCliTimeoutError, getPromptCleanupError } from "./errors"
 import type { AgyPtyDisposable, AgyPtyExitEvent, AgyPtyProcess, AgyPtySpawn, AgyPtySpawnOptions } from "./model-discovery"
 import type { PromptFileTransport } from "./prompt-transport"
+import type { AgyProgressMonitor, AgyTerminalOutputParser } from "./types"
 
 class FakeAgyPty implements AgyPtyProcess {
   pid?: number
@@ -294,6 +295,7 @@ describe("runAgyCommand", () => {
     expect(fake.calls).toHaveLength(1)
     expect(fake.calls[0].command).toBe("fake-agy")
     expect(fake.calls[0].options).toMatchObject({ name: "xterm-color", cols: 120, rows: 30, cwd: "." })
+    expect(Object.prototype.hasOwnProperty.call(fake.calls[0].options, "windowsPty")).toBe(false)
     expect(fake.calls[0].options.env.AGY_TEST_ENV).toBe("1")
     const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", longPrompt)
     const wrapperPrompt = fake.calls[0].args[fake.calls[0].args.indexOf("-p") + 1]
@@ -365,7 +367,7 @@ describe("runAgyCommand", () => {
     expect(result.stdout).toBe("OK")
     expect(fake.calls[0].args.filter((arg) => arg === "--log-file")).toHaveLength(1)
     expect(fake.calls[0].args[fake.calls[0].args.indexOf("--log-file") + 1]).toBe(path.join(getPromptTempDir(fake.calls[0].args), "agy.log"))
-    expect(progressMessages).toEqual(["Antigravity CLIを起動しています", "Starting new conversation"])
+    expect(progressMessages).toEqual(["Antigravity CLIを起動しています", "リクエストを送信しています"])
     expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
   })
 
@@ -425,6 +427,7 @@ describe("runAgyCommand", () => {
 
       expect(result.stdout).toBe("OK")
       expect(fake.calls[0].command).toBe(executable)
+      expect(Object.prototype.hasOwnProperty.call(fake.calls[0].options, "windowsPty")).toBe(false)
       const tempDir = expectFilePromptArgs(fake.calls[0].args, "Gemini 3.5 Flash (Medium)", "hello")
       expect(existsSync(tempDir)).toBe(false)
       expect(fake.calls[0].child.releaseEvents).toEqual(["in", "out", "worker"])
@@ -726,6 +729,142 @@ describe("runAgyCommand", () => {
     expect(fake.calls[0].child.killSignals).toEqual(["SIGTERM"])
     expect(fake.calls[0].child.disposeEvents).toEqual(["data", "exit"])
     expect(existsSync(tempDir)).toBe(false)
+  })
+
+  test("force settles when terminal parser push never resolves", async () => {
+    const fake = createFakePtySpawn()
+    const timers = createManualTimers()
+    const abortController = new AbortController()
+    let parserDisposeCalls = 0
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello pending parser",
+        options: {
+          command: "./fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        abortSignal: abortController.signal,
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        cancellationForceCleanupMs: 100,
+        createAgyTerminalOutputParser: (): AgyTerminalOutputParser => ({
+          push: () => new Promise<void>(() => undefined),
+          finish: async () => "",
+          dispose: () => { parserDisposeCalls += 1 },
+        }),
+      },
+    )
+
+    await waitForSpawn(fake.calls)
+    const tempDir = getPromptTempDir(fake.calls[0].args)
+    fake.calls[0].child.writeData("pending")
+    abortController.abort()
+    timers.fire(100)
+
+    await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
+    expect(parserDisposeCalls).toBe(1)
+    expect(fake.calls[0].child.disposeEvents).toEqual(["data", "exit"])
+    expect(existsSync(tempDir)).toBe(false)
+  })
+
+  test("force settles when progress monitor stop never resolves", async () => {
+    const fake = createFakePtySpawn()
+    const timers = createManualTimers()
+    const abortController = new AbortController()
+    let parserDisposeCalls = 0
+    let monitorDisposeCalls = 0
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello pending monitor",
+        options: {
+          command: "./fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        abortSignal: abortController.signal,
+        onProgress: () => undefined,
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        cancellationForceCleanupMs: 100,
+        createAgyTerminalOutputParser: (): AgyTerminalOutputParser => ({
+          push: async () => undefined,
+          finish: async () => "OK",
+          dispose: () => { parserDisposeCalls += 1 },
+        }),
+        createAgyProgressMonitor: (): AgyProgressMonitor => ({
+          start: () => undefined,
+          stop: () => new Promise<void>(() => undefined),
+          dispose: () => { monitorDisposeCalls += 1 },
+        }),
+      },
+    )
+
+    await waitForSpawn(fake.calls)
+    fake.calls[0].child.writeData("OK")
+    abortController.abort()
+    fake.calls[0].child.exit(0)
+    timers.fire(100)
+
+    await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
+    expect(parserDisposeCalls).toBe(1)
+    expect(monitorDisposeCalls).toBe(1)
+    expect(fake.calls[0].child.disposeEvents).toEqual(["data", "exit"])
+  })
+
+  test("does not settle twice when a parser resolves after forced cancellation", async () => {
+    const fake = createFakePtySpawn()
+    const timers = createManualTimers()
+    const abortController = new AbortController()
+    let resolvePush: () => void = () => undefined
+    let parserDisposeCalls = 0
+    let finishCalls = 0
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello late parser",
+        options: {
+          command: "./fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        abortSignal: abortController.signal,
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        cancellationForceCleanupMs: 100,
+        createAgyTerminalOutputParser: (): AgyTerminalOutputParser => ({
+          push: () => new Promise<void>((resolve) => { resolvePush = resolve }),
+          finish: async () => { finishCalls += 1; return "late" },
+          dispose: () => { parserDisposeCalls += 1 },
+        }),
+      },
+    )
+
+    await waitForSpawn(fake.calls)
+    fake.calls[0].child.writeData("late")
+    abortController.abort()
+    timers.fire(100)
+    await expect(run).rejects.toThrow("Antigravity CLI call aborted.")
+
+    resolvePush()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(finishCalls).toBe(0)
+    expect(parserDisposeCalls).toBe(1)
+    expect(fake.calls[0].child.disposeEvents).toEqual(["data", "exit"])
   })
 
   test("Windows force kill calls processKill for a valid child pid", async () => {

@@ -12,7 +12,7 @@ import { releaseAgyPtyProcess, resolveAgyExecutable } from "./model-discovery"
 import { buildAgyArgs, normalizeOptions, resolveAgyModel } from "./options"
 import { createPromptFileTransport } from "./prompt-transport"
 import { createAgyProgressMonitor } from "./agy-progress"
-import { createAgyTerminalOutputParser, getAgyWindowsPtyOptions } from "./agy-terminal-output"
+import { createAgyTerminalOutputParser } from "./agy-terminal-output"
 import type { AgyPtyDisposable, AgyPtyModule, AgyPtyProcess } from "./model-discovery"
 import type { AgyPromptTransport } from "./options"
 import type { AgyCommandInvocation, AgyCommandResult, RunAgyCommandDependencies, RunAgyCommandRequest } from "./types"
@@ -148,7 +148,6 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
             rows: 30,
             cwd: invocation.options.cwd,
             env,
-            windowsPty: getAgyWindowsPtyOptions(platform),
           })
         } catch (error) {
           reject(new AntigravityCliProviderError(`Antigravity CLI failed to start. ${error instanceof Error ? error.message : String(error)}`, { cause: error }))
@@ -171,6 +170,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
         let progressMonitorError: Error | undefined
         let exitEvent: { exitCode: number } | undefined
         let finalizationStarted = false
+        let cleanupCompleted = false
 
         const clearMainTimeout = () => {
           if (timeout !== undefined) {
@@ -194,6 +194,11 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
         }
 
         const cleanup = () => {
+          if (cleanupCompleted) {
+            return
+          }
+
+          cleanupCompleted = true
           clearMainTimeout()
           clearForceKillTimer()
           clearFinalCleanupTimer()
@@ -202,7 +207,8 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           for (const disposable of disposables) {
             disposable.dispose()
           }
-          terminalOutputParser.dispose()
+          progressMonitor?.dispose()
+          terminalOutputParser?.dispose()
         }
 
         const forceKillChild = () => {
@@ -231,12 +237,14 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           child.kill("SIGTERM")
         }
 
-        const rejectAfterFinalCleanup = () => {
-          if (settled || finalizationStarted) {
+        const forceSettleCancellation = () => {
+          if (settled) {
             return
           }
 
-          void finalize(undefined)
+          settled = true
+          cleanup()
+          reject(cancellationError ?? new AntigravityCliProviderError("Antigravity CLI cancellation cleanup completed without a cancellation error."))
         }
 
         const requestCancellation = (error: Error) => {
@@ -261,7 +269,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           }, dependencies.cancellationGraceMs ?? 1_500)
           finalCleanupTimer ??= setTimer(() => {
             finalCleanupTimer = undefined
-            rejectAfterFinalCleanup()
+            forceSettleCancellation()
           }, dependencies.cancellationForceCleanupMs ?? 5_000)
         }
 
@@ -293,10 +301,23 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           let finalOutput = ""
           try {
             await terminalWriteChain
+            if (settled) {
+              return
+            }
             await progressMonitor?.stop()
+            if (settled) {
+              return
+            }
             finalOutput = await terminalOutputParser.finish()
+            if (settled) {
+              return
+            }
           } catch (error) {
             flushError = error instanceof Error ? error : new Error(String(error))
+          }
+
+          if (settled) {
+            return
           }
 
           settled = true

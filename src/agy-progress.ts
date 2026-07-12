@@ -8,27 +8,27 @@ const unknownProgressIntervalMs = 30_000
 
 const fixedMessageForLogLine = (line: string) => {
   if (/Starting new conversation/i.test(line)) {
-    return "Starting new conversation"
+    return "リクエストを送信しています"
   }
 
   if (/Created conversation/i.test(line)) {
-    return "Created conversation"
+    return "リクエストを送信しています"
   }
 
   if (/Sending user message/i.test(line)) {
-    return "→ リクエストを送信しています"
+    return "リクエストを送信しています"
   }
 
   if (/Streaming conversation/i.test(line) || /streamGenerateContent/i.test(line)) {
-    return "→ 応答を生成しています"
+    return "応答を生成しています"
   }
 
   if (/Tool confirmation/i.test(line) && /ReadFile/i.test(line)) {
-    return "→ ファイルを読み取っています"
+    return "ファイルを読み取っています"
   }
 
   if (/Tool confirmation/i.test(line)) {
-    return "→ ツールを実行しています"
+    return "ツールを実行しています"
   }
 
   return undefined
@@ -52,12 +52,13 @@ export const createAgyProgressMonitor = (
   let readChain = Promise.resolve()
   let stopped = false
   let failed = false
+  let disposed = false
   let activityReported = false
   let lastMessage: string | undefined
   let lastProgressAt = 0
 
   const emit = (message: string) => {
-    if (message === lastMessage) {
+    if (disposed || message === lastMessage) {
       return
     }
 
@@ -67,6 +68,10 @@ export const createAgyProgressMonitor = (
   }
 
   const processLine = (line: string) => {
+    if (disposed) {
+      return
+    }
+
     const normalizedLine = line.endsWith("\r") ? line.slice(0, -1) : line
     if (normalizedLine.trim().length === 0) {
       return
@@ -103,7 +108,7 @@ export const createAgyProgressMonitor = (
   }
 
   const fail = (error: unknown) => {
-    if (failed) {
+    if (failed || disposed) {
       return
     }
 
@@ -144,6 +149,10 @@ export const createAgyProgressMonitor = (
   }
 
   const scheduleRead = () => {
+    if (stopped || disposed) {
+      return
+    }
+
     readChain = readChain.then(
       () => readAvailable(false),
       () => undefined,
@@ -159,7 +168,7 @@ export const createAgyProgressMonitor = (
       timer = setInterval(scheduleRead, intervalMs)
     },
     async stop() {
-      if (stopped) {
+      if (stopped || disposed) {
         return
       }
 
@@ -179,6 +188,18 @@ export const createAgyProgressMonitor = (
       } catch (error) {
         fail(error)
         throw new Error(progressMonitoringErrorMessage)
+      }
+    },
+    dispose() {
+      if (disposed) {
+        return
+      }
+
+      disposed = true
+      stopped = true
+      if (timer !== undefined) {
+        clearInterval(timer)
+        timer = undefined
       }
     },
   }

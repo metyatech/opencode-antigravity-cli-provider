@@ -37,15 +37,18 @@ const firstVisibleText = (lines: string[]) => {
   return lines.slice(firstVisibleIndex).join("\n")
 }
 
-export const createAgyTerminalOutputParser = (onDelta: (delta: string) => void): AgyTerminalOutputParser => {
-  const terminal = new Terminal({
+export const buildAgyTerminalOptions = (platform: NodeJS.Platform, osRelease = os.release()) => ({
     cols: 120,
     rows: 30,
     scrollback: 100_000,
     allowProposedApi: true,
     convertEol: false,
     logLevel: "off",
-  })
+    windowsPty: getAgyWindowsPtyOptions(platform, osRelease),
+  } as const)
+
+export const createAgyTerminalOutputParser = (onDelta: (delta: string) => void, platform: NodeJS.Platform): AgyTerminalOutputParser => {
+  const terminal = new Terminal(buildAgyTerminalOptions(platform))
   let writeChain = Promise.resolve()
   let previousAnswer = ""
   let answerStarted = false
@@ -130,11 +133,11 @@ export const createAgyTerminalOutputParser = (onDelta: (delta: string) => void):
   }
 }
 
-export const getAgyWindowsPtyOptions = (platform: NodeJS.Platform) => {
+export const getAgyWindowsPtyOptions = (platform: NodeJS.Platform, osRelease = os.release()) => {
   if (platform !== "win32") {
     return undefined
   }
 
-  const buildNumber = Number(os.release().split(".").at(-1))
+  const buildNumber = Number(osRelease.split(".").at(-1))
   return Number.isFinite(buildNumber) ? { backend: "conpty" as const, buildNumber } : { backend: "conpty" as const }
 }
