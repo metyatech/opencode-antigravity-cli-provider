@@ -18,7 +18,7 @@ describe("interactive setup detection", () => {
       "not signed in",
       "Authorization URL: https://example.test",
       "Do you trust this folder?",
-      "requires permission",
+      "This action requires permission",
       "Select a theme",
       "accept the terms",
       "press enter to continue",
@@ -30,6 +30,34 @@ describe("interactive setup detection", () => {
 
   test("does not classify ordinary model output as setup", () => {
     expect(isInteractivePrompt("Here is the generated answer.")).toBe(false)
+  })
+
+  test("does not classify prompt patterns quoted in generated source as setup", () => {
+    for (const text of [
+      "const interactivePromptPatterns = [\n  /not signed in/i,\n  /sign in/i,\n  /press enter/i,\n]",
+      'This section explains how users sign in.',
+      'The code detects "press enter" messages.',
+      "Use the authorization URL pattern for detection.",
+      'isInteractivePrompt("Please login to continue")',
+    ]) {
+      expect(isInteractivePrompt(text)).toBe(false)
+    }
+  })
+
+  test("accepts case and punctuation variations of complete prompt lines", () => {
+    for (const prompt of [
+      "NOT SIGNED IN",
+      "You are not signed in.",
+      "Please sign in to continue!",
+      "Permission required.",
+      "Press Enter to continue.",
+    ]) {
+      expect(isInteractivePrompt(prompt)).toBe(true)
+    }
+  })
+
+  test("accepts ANSI-decorated prompt lines", () => {
+    expect(isInteractivePrompt("\u001b[31mPlease login to continue\u001b[0m\r")).toBe(true)
   })
 })
 

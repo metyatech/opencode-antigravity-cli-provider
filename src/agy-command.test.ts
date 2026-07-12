@@ -131,6 +131,13 @@ const waitForSpawn = async (calls: Array<unknown>) => {
   expect(calls).toHaveLength(1)
 }
 
+const waitForWrite = async (child: FakeAgyPty) => {
+  for (let attempt = 0; attempt < 20 && child.writeCalls.length === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  expect(child.writeCalls).toContain("\x03")
+}
+
 const expectPromisePending = async <T>(promise: Promise<T>) => {
   let settled = false
   promise.then(
@@ -260,6 +267,114 @@ describe("buildAgyCommandInvocation", () => {
 })
 
 describe("runAgyCommand", () => {
+  const interactivePromptPatternSource = `const interactivePromptPatterns = [
+  /not signed in/i,
+  /sign in/i,
+  /authorization URL/i,
+  /do you trust/i,
+  /trust this folder/i,
+  /requires permission/i,
+  /select .*theme/i,
+  /accept .*terms/i,
+  /press enter/i,
+  /↑\/↓ Navigate/i,
+  /login to continue/i,
+  /permission required/i,
+]`
+
+  test("does not cancel normal streamed output that quotes setup patterns", async () => {
+    const onStdoutChunks: string[] = []
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData(`Answer starts\r\n${interactivePromptPatternSource.replaceAll("\n", "\r\n")}\r\nMore explanation\r\nEND_OF_FALSE_POSITIVE_TEST`)
+        child.exit(0)
+      })
+    })
+
+    const result = await runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "explain the detector",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+        onStdout: (chunk) => onStdoutChunks.push(chunk),
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux" },
+    )
+
+    expect(result.stdout).toContain(interactivePromptPatternSource)
+    expect(result.stdout).toContain("END_OF_FALSE_POSITIVE_TEST")
+    expect(onStdoutChunks.join("")).toBe(result.stdout)
+    expect(fake.calls[0].child.writeCalls).toEqual([])
+    expect(fake.calls[0].child.killSignals).toEqual([])
+    expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
+  })
+
+  test("does not cancel when the answer and quoted patterns share one PTY chunk", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData(`First answer line\r\nSecond answer line\r\n${interactivePromptPatternSource.replaceAll("\n", "\r\n")}\r\nEND_OF_FALSE_POSITIVE_TEST`)
+        child.exit(0)
+      })
+    })
+
+    const result = await runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "same chunk",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux" },
+    )
+
+    expect(result.stdout).toContain("END_OF_FALSE_POSITIVE_TEST")
+    expect(fake.calls[0].child.writeCalls).toEqual([])
+  })
+
+  test("does not classify an exact prompt as setup after answer streaming starts", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("First answer line\nSecond answer line\nThird answer line\nPlease login to continue\nEND_OF_FALSE_POSITIVE_TEST")
+        child.exit(0)
+      })
+    })
+
+    const result = await runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "exact prompt after answer",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux" },
+    )
+
+    expect(result.stdout).toContain("Please login to continue")
+    expect(fake.calls[0].child.writeCalls).toEqual([])
+  })
+
+  test("detects a genuine setup prompt split across PTY chunks", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("Please log")
+        child.writeData("in to continue")
+      })
+    })
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "split setup",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux" },
+    )
+
+    await waitForSpawn(fake.calls)
+    await waitForWrite(fake.calls[0].child)
+    await expectPromisePending(run)
+    expect(fake.calls[0].child.writeCalls).toEqual(["\x03"])
+    fake.calls[0].child.exit(1)
+    await expect(run).rejects.toThrow("Antigravity CLI requires interactive setup")
+  })
+
   test("spawns the resolved command through PTY and returns final sanitized output", async () => {
     const onStdoutChunks: string[] = []
     const longPrompt = "hello".repeat(20_000)

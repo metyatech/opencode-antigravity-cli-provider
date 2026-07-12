@@ -6,8 +6,8 @@ import {
   createExitError,
   createInteractiveSetupError,
   createNoOutputError,
-  isInteractivePrompt,
 } from "./errors"
+import { createAgyInteractiveSetupDetector } from "./agy-interactive-setup"
 import type { AgyClearTimeout, AgySetTimeout } from "./types"
 
 export type DiscoveredAgyModel = {
@@ -298,6 +298,7 @@ export const discoverAgyModels = async (options: DiscoverAgyModelsOptions = {}, 
     }
 
     let output = ""
+    const interactiveSetupDetector = createAgyInteractiveSetupDetector()
     let settled = false
     const disposables: AgyPtyDisposable[] = []
 
@@ -341,8 +342,9 @@ export const discoverAgyModels = async (options: DiscoverAgyModelsOptions = {}, 
       }
 
       output += text
-      if (isInteractivePrompt(text) || isInteractivePrompt(output)) {
-        killAndFail(createInteractiveSetupError(text))
+      const prompt = interactiveSetupDetector.push(text)
+      if (prompt !== undefined) {
+        killAndFail(createInteractiveSetupError(prompt))
       }
     }))
 

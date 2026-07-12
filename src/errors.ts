@@ -74,23 +74,6 @@ export class AntigravityCliTimeoutError extends AntigravityCliProviderError {
   }
 }
 
-const interactivePromptPatterns = [
-  /not signed in/i,
-  /sign in/i,
-  /authorization URL/i,
-  /do you trust/i,
-  /trust this folder/i,
-  /requires permission/i,
-  /select .*theme/i,
-  /accept .*terms/i,
-  /press enter/i,
-  /↑\/↓ Navigate/i,
-  /login to continue/i,
-  /permission required/i,
-]
-
-export const isInteractivePrompt = (text: string) => interactivePromptPatterns.some((pattern) => pattern.test(text))
-
 export const summarizeStderr = (stderr: string, maxLength = 240) => {
   const summary = stderr.replace(/\s+/g, " ").trim()
   return summary.length > maxLength ? `${summary.slice(0, maxLength - 1)}…` : summary
@@ -109,3 +92,4 @@ export const createAbortError = () => {
   error.name = "AbortError"
   return error
 }
+export { isInteractivePrompt } from "./agy-interactive-setup"

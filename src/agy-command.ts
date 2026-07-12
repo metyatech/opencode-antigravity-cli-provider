@@ -6,8 +6,8 @@ import {
   createExitError,
   createInteractiveSetupError,
   createNoOutputError,
-  isInteractivePrompt,
 } from "./errors"
+import { createAgyInteractiveSetupDetector } from "./agy-interactive-setup"
 import { releaseAgyPtyProcess, resolveAgyExecutable } from "./model-discovery"
 import { buildAgyArgs, normalizeOptions, resolveAgyModel } from "./options"
 import { createPromptFileTransport } from "./prompt-transport"
@@ -171,6 +171,8 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
         let exitEvent: { exitCode: number } | undefined
         let finalizationStarted = false
         let cleanupCompleted = false
+        const interactiveSetupDetector = createAgyInteractiveSetupDetector()
+        let answerStreamingStarted = false
 
         const clearMainTimeout = () => {
           if (timeout !== undefined) {
@@ -369,6 +371,10 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
             return
           }
 
+          if (!answerStreamingStarted && chunk.length > 0) {
+            answerStreamingStarted = true
+            interactiveSetupDetector.disable()
+          }
           request.onStdout?.(chunk)
         }, platform)
 
@@ -387,12 +393,17 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           }
 
           output += text
-          terminalWriteChain = terminalWriteChain.then(() => terminalOutputParser.push(text)).catch((error: unknown) => {
+          terminalWriteChain = terminalWriteChain.then(async () => {
+            await terminalOutputParser.push(text)
+            if (!answerStreamingStarted) {
+              const prompt = interactiveSetupDetector.push(text)
+              if (prompt !== undefined) {
+                requestCancellation(createInteractiveSetupError(prompt))
+              }
+            }
+          }).catch((error: unknown) => {
             failTerminalOutput(error)
           })
-          if (isInteractivePrompt(text) || isInteractivePrompt(output)) {
-            requestCancellation(createInteractiveSetupError(sanitizeAgyGenerationPtyOutput(text)))
-          }
         }))
 
         disposables.push(child.onExit(({ exitCode }) => {
