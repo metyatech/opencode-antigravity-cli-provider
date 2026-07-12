@@ -104,6 +104,21 @@ describe("createAgyTerminalOutputParser", () => {
     parser.dispose()
   })
 
+  test("keeps the latest mutable tail after a tail line is removed and cleanup clears the terminal", async () => {
+    const deltas: string[] = []
+    const parser = createAgyTerminalOutputParser((delta) => deltas.push(delta), "linux")
+    await parser.push("確定行\r\n削除されるtail\r\n残るtail")
+    await parser.push(`${esc}[2J${esc}[H確定行\r\n残るtail`)
+    await parser.push(`${esc}[2J${esc}[H`)
+
+    const final = await parser.finish()
+
+    expect(final).toBe("確定行\n残るtail")
+    expect(final).not.toContain("削除されるtail")
+    expect(deltas.join("")).toBe(final)
+    parser.dispose()
+  })
+
   test("keeps the latest replacement in the mutable tail when cleanup clears the terminal", async () => {
     const deltas: string[] = []
     const parser = createAgyTerminalOutputParser((delta) => deltas.push(delta), "linux")

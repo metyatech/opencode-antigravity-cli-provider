@@ -121,6 +121,9 @@ export const createAgyTerminalOutputParser = (onDelta: (delta: string) => void, 
 
     const stablePrefix = stablePrefixForLines(candidate.split("\n"), mutableTailLineCount)
     if (stablePrefix.length < committedPrefix.length && committedPrefix.startsWith(stablePrefix)) {
+      if (candidate.startsWith(committedPrefix)) {
+        lastAcceptedAnswer = candidate
+      }
       return committedPrefix
     }
 
