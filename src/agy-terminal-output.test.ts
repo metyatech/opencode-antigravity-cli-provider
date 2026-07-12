@@ -70,10 +70,10 @@ describe("createAgyTerminalOutputParser", () => {
   test("retains the last committed answer when redraw cleanup leaves an empty terminal", async () => {
     const deltas: string[] = []
     const parser = createAgyTerminalOutputParser((delta) => deltas.push(delta), "linux")
-    await parser.push("確定行\n末尾\n表示中")
+    await parser.push("確定行\r\n末尾\r\n表示中")
     await parser.push(`${esc}[2J${esc}[H`)
-    await expect(parser.finish()).resolves.toBe("確定行\n")
-    expect(deltas).toEqual(["確定行\n"])
+    await expect(parser.finish()).resolves.toBe("確定行\n末尾\n表示中")
+    expect(deltas.join("")).toBe("確定行\n")
     parser.dispose()
   })
 

@@ -42,6 +42,21 @@ const firstVisibleText = (lines: string[]) => {
   return lines.slice(firstVisibleIndex).join("\n")
 }
 
+const commonPrefixLength = (left: string, right: string) => {
+  const length = Math.min(left.length, right.length)
+  let index = 0
+  while (index < length && left[index] === right[index]) index += 1
+  return index
+}
+
+const candidateRelation = (previous: string, candidate: string, lcp: number) => {
+  if (candidate.length === 0) return "empty"
+  if (candidate.startsWith(previous) && candidate.length > previous.length) return "append"
+  if (previous.startsWith(candidate) && candidate.length < previous.length) return "strict-prefix-regression"
+  if (lcp === Math.min(previous.length, candidate.length)) return "suffix-divergence"
+  return "earlier-divergence"
+}
+
 const stablePrefixForLines = (lines: string[], tailLineCount: number) => {
   if (lines.length <= tailLineCount) {
     return ""
@@ -64,6 +79,8 @@ export const createAgyTerminalOutputParser = (onDelta: (delta: string) => void, 
   const terminal = new Terminal(buildAgyTerminalOptions(platform))
   let writeChain = Promise.resolve()
   let committedPrefix = ""
+  let lastNormalAnswer = ""
+  let lastObservedCandidate = ""
   let answerStarted = false
   let excludeProgressLine = false
   let disposed = false
@@ -94,12 +111,16 @@ export const createAgyTerminalOutputParser = (onDelta: (delta: string) => void, 
     }
 
     if (finalize) {
-      if (candidate.length === 0 || (candidate.length < committedPrefix.length && committedPrefix.startsWith(candidate))) {
-        return committedPrefix
+      if (candidate.length === 0) {
+        return lastNormalAnswer || committedPrefix
       }
 
       if (!candidate.startsWith(committedPrefix)) {
         throw new Error("Antigravity CLI terminal output became non-monotonic after streaming started.")
+      }
+
+      if (candidate.length < lastNormalAnswer.length) {
+        return lastNormalAnswer
       }
 
       const suffix = candidate.slice(committedPrefix.length)
@@ -112,7 +133,10 @@ export const createAgyTerminalOutputParser = (onDelta: (delta: string) => void, 
     }
 
     const stablePrefix = stablePrefixForLines(candidate.split("\n"), mutableTailLineCount)
+    const observedLcp = commonPrefixLength(lastObservedCandidate, candidate)
+    const observedRelation = candidateRelation(lastObservedCandidate, candidate, observedLcp)
     if (stablePrefix.length < committedPrefix.length && committedPrefix.startsWith(stablePrefix)) {
+      lastObservedCandidate = candidate
       return committedPrefix
     }
 
@@ -122,6 +146,10 @@ export const createAgyTerminalOutputParser = (onDelta: (delta: string) => void, 
 
     const suffix = stablePrefix.slice(committedPrefix.length)
     committedPrefix = stablePrefix
+    if (observedRelation !== "strict-prefix-regression" && observedRelation !== "empty" && observedRelation !== "earlier-divergence" && observedRelation !== "suffix-divergence") {
+      lastNormalAnswer = candidate
+    }
+    lastObservedCandidate = candidate
     if (suffix.length > 0) {
       answerStarted = true
       onDelta(suffix)
