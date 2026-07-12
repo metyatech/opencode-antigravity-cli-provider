@@ -90,6 +90,48 @@ describe("createAgyTerminalOutputParser", () => {
     parser.dispose()
   })
 
+  test("keeps the latest shorter mutable tail when cleanup clears the terminal", async () => {
+    const deltas: string[] = []
+    const parser = createAgyTerminalOutputParser((delta) => deltas.push(delta), "linux")
+    await parser.push("確定行\r\n変更前の長い末尾\r\n最後")
+    await parser.push(`${esc}[1A${esc}[1G${esc}[2K短い末尾`)
+    await parser.push(`${esc}[2J${esc}[H`)
+
+    const final = await parser.finish()
+
+    expect(final).toBe("確定行\n短い末尾\n最後")
+    expect(deltas.join("")).toBe(final)
+    parser.dispose()
+  })
+
+  test("keeps the latest replacement in the mutable tail when cleanup clears the terminal", async () => {
+    const deltas: string[] = []
+    const parser = createAgyTerminalOutputParser((delta) => deltas.push(delta), "linux")
+    await parser.push("確定行\r\n変更前の末尾\r\n最後")
+    await parser.push(`${esc}[1A${esc}[1G${esc}[2K置き換え後の末尾`)
+    await parser.push(`${esc}[2J${esc}[H`)
+
+    const final = await parser.finish()
+
+    expect(final).toBe("確定行\n置き換え後の末尾\n最後")
+    expect(deltas.join("")).toBe(final)
+    parser.dispose()
+  })
+
+  test("does not retain a transient committed-prefix regression before cleanup", async () => {
+    const deltas: string[] = []
+    const parser = createAgyTerminalOutputParser((delta) => deltas.push(delta), "linux")
+    await parser.push("確定行\r\n安定行\r\n末尾")
+    await parser.push(`${esc}[2J${esc}[H確定行`)
+    await parser.push(`${esc}[2J${esc}[H`)
+
+    const final = await parser.finish()
+
+    expect(final).toBe("確定行\n安定行\n末尾")
+    expect(deltas.join("")).toBe(final)
+    parser.dispose()
+  })
+
   test("restores wrapped CJK lines, carriage returns, and cursor overwrites without duplication", async () => {
     const deltas: string[] = []
     const parser = createAgyTerminalOutputParser((delta) => deltas.push(delta), "linux")
