@@ -29,30 +29,6 @@ export type AgyInteractivePromptCandidate = {
   line: string
 }
 
-const terminalFrameResetPattern = /\x1b\[(?:2J|H|K|2K)/
-
-const incompleteAnsiSuffix = (text: string) => {
-  const escapeIndex = text.lastIndexOf("\u001b")
-  if (escapeIndex < 0) {
-    return ""
-  }
-
-  const suffix = text.slice(escapeIndex)
-  if (suffix === "\u001b") {
-    return suffix
-  }
-
-  if (suffix.startsWith("\u001b]") && !suffix.includes("\u0007") && !suffix.includes("\u001b\\")) {
-    return suffix
-  }
-
-  if (suffix.startsWith("\u001b[") && !/^\u001b\[[0-?]*[ -/]*[@-~]/.test(suffix)) {
-    return suffix
-  }
-
-  return ""
-}
-
 export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: number } = {}): AgyInteractiveSetupDetector => {
   const maxBufferSize = Math.max(1, options.maxBufferSize ?? defaultMaxBufferSize)
   let lineBuffer = ""
@@ -60,39 +36,121 @@ export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: num
   let currentCandidate: AgyInteractivePromptCandidate | undefined
   let enabled = true
 
+  const clearActiveLine = () => {
+    lineBuffer = ""
+    currentCandidate = undefined
+  }
+
+  const evaluateActiveLine = () => {
+    const trimmedLine = lineBuffer.trim()
+    if (trimmedLine.length === 0) {
+      return
+    }
+
+    currentCandidate = isInteractivePrompt(trimmedLine) ? { line: trimmedLine } : undefined
+  }
+
+  const completeLine = () => {
+    evaluateActiveLine()
+    lineBuffer = ""
+  }
+
+  const appendText = (text: string) => {
+    lineBuffer = `${lineBuffer}${text}`.slice(-maxBufferSize)
+    evaluateActiveLine()
+  }
+
+  const findAnsiSequenceEnd = (text: string, start: number) => {
+    if (text[start + 1] === "[") {
+      for (let index = start + 2; index < text.length; index += 1) {
+        const code = text.charCodeAt(index)
+        if (code >= 0x40 && code <= 0x7e) {
+          return index + 1
+        }
+      }
+      return undefined
+    }
+
+    if (text[start + 1] === "]") {
+      for (let index = start + 2; index < text.length; index += 1) {
+        if (text[index] === "\u0007") {
+          return index + 1
+        }
+        if (text[index] === "\u001b" && text[index + 1] === "\\") {
+          return index + 2
+        }
+      }
+      return undefined
+    }
+
+    return start + 2 <= text.length ? start + 2 : undefined
+  }
+
+  const processCsi = (sequence: string) => {
+    const finalByte = sequence.at(-1)
+    const parameters = sequence.slice(2, -1)
+    if (finalByte === "K") {
+      clearActiveLine()
+      return
+    }
+
+    if (finalByte === "J" && (parameters === "2" || parameters === "3")) {
+      clearActiveLine()
+    }
+  }
+
   return {
     push(chunk) {
       if (!enabled || chunk.length === 0) {
         return undefined
       }
 
-      if (terminalFrameResetPattern.test(chunk)) {
-        lineBuffer = ""
-        currentCandidate = undefined
-      }
-
       const rawChunk = `${ansiCarry}${chunk}`
-      ansiCarry = incompleteAnsiSuffix(rawChunk).slice(-maxBufferSize)
-      const completeChunk = ansiCarry.length === 0 ? rawChunk : rawChunk.slice(0, -ansiCarry.length)
-      lineBuffer = `${lineBuffer}${normalizeAgyInteractiveSetupText(completeChunk)}`.slice(-maxBufferSize)
-      const normalized = lineBuffer
-      const lines = normalized.split("\n")
-      const trailingLine = lines.pop() ?? ""
-      for (const line of lines) {
-        const trimmedLine = line.trim()
-        if (trimmedLine.length === 0) {
+      ansiCarry = ""
+      let index = 0
+      while (index < rawChunk.length) {
+        const character = rawChunk[index]
+        if (character === "\u001b") {
+          const sequenceEnd = findAnsiSequenceEnd(rawChunk, index)
+          if (sequenceEnd === undefined) {
+            ansiCarry = rawChunk.slice(index).slice(-maxBufferSize)
+            break
+          }
+
+          const sequence = rawChunk.slice(index, sequenceEnd)
+          if (sequence.startsWith("\u001b[")) {
+            processCsi(sequence)
+          }
+          index = sequenceEnd
           continue
         }
 
-        currentCandidate = isInteractivePrompt(trimmedLine) ? { line: trimmedLine } : undefined
+        if (character === "\r") {
+          if (rawChunk[index + 1] === "\n") {
+            completeLine()
+            index += 2
+          } else {
+            clearActiveLine()
+            index += 1
+          }
+          continue
+        }
+
+        if (character === "\n") {
+          completeLine()
+          index += 1
+          continue
+        }
+
+        if (character.charCodeAt(0) < 0x20 || character.charCodeAt(0) === 0x7f) {
+          index += 1
+          continue
+        }
+
+        appendText(character)
+        index += 1
       }
 
-      const trimmedTrailingLine = trailingLine.trim()
-      if (trimmedTrailingLine.length > 0) {
-        currentCandidate = isInteractivePrompt(trimmedTrailingLine) ? { line: trimmedTrailingLine } : undefined
-      }
-
-      lineBuffer = trailingLine.slice(-maxBufferSize)
       return currentCandidate
     },
     clear() {

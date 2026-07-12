@@ -6,6 +6,7 @@ import {
   createExitError,
   createInteractiveSetupError,
   createNoOutputError,
+  isInteractivePrompt,
 } from "./errors"
 import { createAgyInteractiveSetupDetector } from "./agy-interactive-setup"
 import type { AgyClearTimeout, AgySetTimeout } from "./types"
@@ -264,7 +265,7 @@ export const buildAgyModelDiscoveryResult = (names: string[]): AgyModelDiscovery
   return { discovered, models, modelMap }
 }
 
-export const parseAgyModelListOutput = (output: string): string[] => output.split(/\r?\n/).map(stripListPrefix).filter((line) => !shouldIgnoreLine(line))
+export const parseAgyModelListOutput = (output: string): string[] => output.split(/\r?\n/).map(stripListPrefix).filter((line) => !shouldIgnoreLine(line) && !isInteractivePrompt(line))
 
 export const discoverAgyModels = async (options: DiscoverAgyModelsOptions = {}, dependencies: DiscoverAgyModelsDependencies = {}) => {
   const command = options.command ?? "agy"

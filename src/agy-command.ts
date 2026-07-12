@@ -170,6 +170,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
         let progressMonitor: ReturnType<typeof createAgyProgressMonitor> | undefined
         let progressMonitorError: Error | undefined
         let exitEvent: { exitCode: number } | undefined
+        let processExited = false
         let finalizationStarted = false
         let cleanupCompleted = false
         const interactiveSetupDetector = createAgyInteractiveSetupDetector()
@@ -197,12 +198,20 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           }
         }
 
-        const clearInteractiveSetupConfirmation = () => {
+        const cancelInteractiveSetupConfirmationTimer = () => {
           if (interactiveSetupConfirmationTimer !== undefined) {
             clearTimer(interactiveSetupConfirmationTimer)
             interactiveSetupConfirmationTimer = undefined
           }
+        }
+
+        const clearPendingInteractivePrompt = () => {
+          cancelInteractiveSetupConfirmationTimer()
           pendingInteractivePrompt = undefined
+        }
+
+        const resetInteractiveSetupDetection = () => {
+          clearPendingInteractivePrompt()
           interactiveSetupDetector.clear()
         }
 
@@ -215,7 +224,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           clearMainTimeout()
           clearForceKillTimer()
           clearFinalCleanupTimer()
-          clearInteractiveSetupConfirmation()
+          resetInteractiveSetupDetection()
           interactiveSetupDetector.disable()
           request.abortSignal?.removeEventListener("abort", abort)
           releaseAgyPtyProcess(child, platform)
@@ -263,7 +272,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
         }
 
         const requestCancellation = (error: Error) => {
-          if (settled) {
+          if (settled || processExited) {
             return
           }
 
@@ -291,7 +300,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
         const updateInteractiveSetupCandidate = (candidate: string | undefined) => {
           if (candidate === undefined) {
             if (pendingInteractivePrompt !== undefined) {
-              clearInteractiveSetupConfirmation()
+              clearPendingInteractivePrompt()
             }
             return
           }
@@ -301,14 +310,18 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           }
 
           if (interactiveSetupConfirmationTimer !== undefined) {
-            clearTimer(interactiveSetupConfirmationTimer)
+            cancelInteractiveSetupConfirmationTimer()
           }
           pendingInteractivePrompt = candidate
+          if (processExited) {
+            return
+          }
           interactiveSetupConfirmationTimer = setTimer(() => {
             interactiveSetupConfirmationTimer = undefined
-            if (pendingInteractivePrompt === candidate && !settled && !cancellationRequested) {
-              requestCancellation(createInteractiveSetupError(candidate))
+            if (processExited || settled || cancellationRequested || pendingInteractivePrompt !== candidate) {
+              return
             }
+            requestCancellation(createInteractiveSetupError(candidate))
           }, dependencies.interactiveSetupConfirmationMs ?? defaultInteractiveSetupConfirmationMs)
         }
 
@@ -445,6 +458,9 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
             return
           }
 
+          processExited = true
+          clearMainTimeout()
+          cancelInteractiveSetupConfirmationTimer()
           exitEvent = { exitCode }
           void finalize(exitCode)
         }))

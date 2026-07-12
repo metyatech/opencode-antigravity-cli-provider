@@ -145,6 +145,13 @@ const waitForManualTimer = async (timers: ReturnType<typeof createManualTimers>,
   timers.fire(timeoutMs)
 }
 
+const waitForCondition = async (condition: () => boolean) => {
+  for (let attempt = 0; attempt < 30 && !condition(); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  expect(condition()).toBe(true)
+}
+
 const expectPromisePending = async <T>(promise: Promise<T>) => {
   let settled = false
   promise.then(
@@ -288,6 +295,118 @@ describe("runAgyCommand", () => {
   /login to continue/i,
   /permission required/i,
 ]`
+
+  test("does not let a stale confirmation timer cancel after exit code 0", async () => {
+    const timers = createManualTimers()
+    let releaseFinish: (() => void) | undefined
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("Please login to continue")
+      })
+    })
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "exit race",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        createAgyTerminalOutputParser: () => ({
+          push: async () => undefined,
+          finish: () => new Promise<string>((resolve) => {
+            releaseFinish = () => resolve("Please login to continue")
+          }),
+          dispose: () => undefined,
+        }),
+      },
+    )
+
+    await waitForCondition(() => timers.timers.some((timer) => timer.timeoutMs === 750 && !timer.cleared))
+    const confirmationTimer = timers.timers.find((timer) => timer.timeoutMs === 750)
+    expect(confirmationTimer).toBeDefined()
+    fake.calls[0].child.exit(0)
+    await waitForCondition(() => releaseFinish !== undefined)
+    confirmationTimer?.handler()
+    expect(fake.calls[0].child.writeCalls).toEqual([])
+    releaseFinish?.()
+    await expect(run).resolves.toEqual({ stdout: "Please login to continue", stderr: "" })
+    expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
+  })
+
+  test("keeps queued prompt data for exit nonzero setup diagnosis without starting a post-exit timer", async () => {
+    const timers = createManualTimers()
+    let releasePush: (() => void) | undefined
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("Please login to continue")
+        child.exit(1)
+      })
+    })
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "queued exit setup",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        createAgyTerminalOutputParser: () => ({
+          push: () => new Promise<void>((resolve) => {
+            releasePush = resolve
+          }),
+          finish: async () => "Please login to continue",
+          dispose: () => undefined,
+        }),
+      },
+    )
+
+    await waitForCondition(() => releasePush !== undefined)
+    expect(timers.timers.some((timer) => timer.timeoutMs === 750 && !timer.cleared)).toBe(false)
+    releasePush?.()
+    await expect(run).rejects.toThrow("Please login to continue")
+    expect(fake.calls[0].child.writeCalls).toEqual([])
+  })
+
+  test("replaces a pending candidate with a prompt completed across later chunks", async () => {
+    const timers = createManualTimers()
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("Permission required\n")
+        child.writeData("Please log")
+        child.writeData("in to continue")
+      })
+    })
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "candidate replacement",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        createAgyTerminalOutputParser: () => ({
+          push: async () => undefined,
+          finish: async () => "Please login to continue",
+          dispose: () => undefined,
+        }),
+      },
+    )
+
+    await waitForManualTimer(timers, 750)
+    await waitForWrite(fake.calls[0].child)
+    fake.calls[0].child.exit(1)
+    await expect(run).rejects.toThrow("Please login to continue")
+  })
 
   test("does not cancel normal streamed output that quotes setup patterns", async () => {
     const onStdoutChunks: string[] = []

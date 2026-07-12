@@ -287,6 +287,31 @@ describe("discoverAgyModels", () => {
     expect(fake.calls[0].child.killSignals).toEqual([undefined])
   })
 
+  test("does not detect an erased setup prompt during model discovery", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("Please login to continue\u001b[2K\r\nGemini 3.5 Flash (Medium)")
+        child.exit(0)
+      })
+    })
+
+    const result = await discoverAgyModels({ command: "fake-agy", timeoutMs: 1_000 }, { ptySpawn: fake.ptySpawn, platform: "linux" })
+
+    expect(result.discovered.map((model) => model.name)).toEqual(["Gemini 3.5 Flash (Medium)"])
+    expect(fake.calls[0].child.killSignals).toEqual([])
+  })
+
+  test("detects a setup prompt shown after a screen clear during model discovery", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => child.writeData("old text\u001b[2J\u001b[HPlease login to continue"))
+    })
+
+    await expect(discoverAgyModels({ command: "./fake-agy", timeoutMs: 1_000 }, { ptySpawn: fake.ptySpawn, platform: "win32" })).rejects.toThrow(
+      "Please login to continue",
+    )
+    expect(fake.calls[0].child.killSignals).toEqual([undefined])
+  })
+
   test("kills the PTY child on timeout", async () => {
     const fake = createFakePtySpawn()
     const discovery = discoverAgyModels(

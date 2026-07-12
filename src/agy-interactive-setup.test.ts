@@ -23,6 +23,33 @@ describe("AgyInteractiveSetupDetector", () => {
     expect(detector.push("\u0007\r\n")).toEqual({ line: "Please login to continue" })
   })
 
+  test("keeps only the latest candidate while preserving a split replacement prompt", () => {
+    const detector = createAgyInteractiveSetupDetector()
+
+    expect(detector.push("Permission required\n")).toEqual({ line: "Permission required" })
+    expect(detector.push("Please log")).toBeUndefined()
+    expect(detector.push("in to continue")).toEqual({ line: "Please login to continue" })
+  })
+
+  test("processes line and screen erase controls in sequence", () => {
+    const esc = "\u001b"
+    const detector = createAgyInteractiveSetupDetector()
+
+    expect(detector.push(`Please login to continue${esc}[K`)).toBeUndefined()
+    expect(detector.push(`Please login to continue${esc}[2K`)).toBeUndefined()
+    expect(detector.push(`Please login to continue${esc}[2J`)).toBeUndefined()
+    expect(detector.push(`old text${esc}[2J${esc}[HPlease login to continue`)).toEqual({ line: "Please login to continue" })
+    const cursorHomeDetector = createAgyInteractiveSetupDetector()
+    expect(cursorHomeDetector.push(`Please login to continue${esc}[H`)).toEqual({ line: "Please login to continue" })
+  })
+
+  test("handles an erase sequence split across chunks without retaining the erased prompt", () => {
+    const detector = createAgyInteractiveSetupDetector()
+
+    expect(detector.push("Please login to continue\u001b[")).toEqual({ line: "Please login to continue" })
+    expect(detector.push("2K")).toBeUndefined()
+  })
+
   test("keeps the rolling buffer bounded while detecting a trailing prompt", () => {
     const detector = createAgyInteractiveSetupDetector({ maxBufferSize: 4096 })
 
