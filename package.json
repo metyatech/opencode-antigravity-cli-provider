@@ -21,7 +21,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "bun build src/index.ts src/provider.ts --outdir dist --target bun --format esm --external @ai-sdk/provider --external @opencode-ai/plugin --external node-pty && tsgo --emitDeclarationOnly -p tsconfig.json",
+    "build": "bun build src/index.ts src/provider.ts --outdir dist --target bun --format esm --external @ai-sdk/provider --external @opencode-ai/plugin --external node-pty --external @xterm/headless && tsgo --emitDeclarationOnly -p tsconfig.json",
     "typecheck": "tsgo --noEmit -p tsconfig.json",
     "test": "bun test src/**/*.test.ts"
   },
@@ -46,7 +46,8 @@
   "dependencies": {
     "@ai-sdk/provider": "3.0.10",
     "@opencode-ai/plugin": "^1.15.4",
-    "node-pty": "^1.1.0"
+    "node-pty": "^1.1.0",
+    "@xterm/headless": "6.0.0"
   },
   "devDependencies": {
     "@typescript/native-preview": "7.0.0-dev.20260518.1",

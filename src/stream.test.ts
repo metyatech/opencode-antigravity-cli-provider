@@ -4,7 +4,7 @@ import path from "node:path"
 import { PromptCleanupError } from "./errors"
 import { createAgyTextStream } from "./stream"
 import type { AgyPtyDisposable, AgyPtyExitEvent, AgyPtyProcess, AgyPtySpawn, AgyPtySpawnOptions } from "./model-discovery"
-import type { LanguageModelV3StreamPart } from "./types"
+import type { AgyProgressMonitor, AgyTerminalOutputParser, LanguageModelV3StreamPart } from "./types"
 import type { PromptFileTransport } from "./prompt-transport"
 
 class FakeAgyPty implements AgyPtyProcess {
@@ -144,9 +144,11 @@ const expectWrapperPrompt = (args: string[], promptBody: string) => {
 const createInjectedPromptTransport = (cleanup: () => Promise<void>) => {
   const tempDir = `/tmp/opencode-antigravity-prompt-stream-${Math.random().toString(16).slice(2)}`
   const promptFile = path.join(tempDir, "prompt.txt")
+  const logFile = path.join(tempDir, "agy.log")
   const transport: PromptFileTransport = {
     tempDir,
     promptFile,
+    logFile,
     wrapperPrompt: `Read the prompt file at '${promptFile}' and answer the request written in that file. Treat the file contents as the user's full request. Return only the final answer. Do not summarize or echo the file unless it asks for that.`,
     cleanup,
   }
@@ -154,6 +156,56 @@ const createInjectedPromptTransport = (cleanup: () => Promise<void>) => {
 }
 
 describe("createAgyTextStream", () => {
+  test("emits CLI progress reasoning before text and ignores progress after text starts", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => {
+        child.writeData("raw PTY response")
+        child.exit(0)
+      })
+    })
+    const parts = await collectStream(
+      createAgyTextStream(
+        {
+          modelId: "gemini-3-5-flash-medium",
+          prompt: "hello",
+          options: {
+            command: "fake-agy",
+            timeoutMs: 1_000,
+            modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+          },
+        },
+        {
+          ptySpawn: fake.ptySpawn,
+          platform: "linux",
+          createAgyTerminalOutputParser: (onDelta): AgyTerminalOutputParser => ({
+            push: async () => onDelta("answer"),
+            finish: async () => "answer",
+            dispose: () => undefined,
+          }),
+          createAgyProgressMonitor: ({ onProgress }): AgyProgressMonitor => ({
+            start: () => onProgress("Antigravity CLIを起動しています"),
+            stop: async () => onProgress("late progress"),
+          }),
+        },
+      ),
+    )
+
+    expect(parts.map((part) => part.type)).toEqual([
+      "stream-start",
+      "reasoning-start",
+      "reasoning-delta",
+      "reasoning-end",
+      "text-start",
+      "text-delta",
+      "text-end",
+      "finish",
+    ])
+    expect(parts).toContainEqual({ type: "reasoning-start", id: "antigravity-cli-progress" })
+    expect(parts).toContainEqual({ type: "reasoning-delta", id: "antigravity-cli-progress", delta: "Antigravity CLIを起動しています\n" })
+    expect(parts).toContainEqual({ type: "text-delta", id: "antigravity-cli-text", delta: "answer" })
+    expect(parts.map((part) => JSON.stringify(part)).join("\n")).not.toContain("late progress")
+  })
+
   test("emits the final sanitized PTY output as one text delta and finishes", async () => {
     const fake = createFakePtySpawn((child) => {
       queueMicrotask(() => {

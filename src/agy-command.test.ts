@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { buildAgyCommandInvocation, runAgyCommand, sanitizeAgyGenerationPtyOutput } from "./agy-command"
@@ -182,9 +182,11 @@ const expectFilePromptArgs = (args: string[], agyModel: string, longPrompt: stri
 const createInjectedPromptTransport = (cleanup: () => Promise<void> = async () => undefined) => {
   const tempDir = path.join(tmpdir(), `opencode-antigravity-prompt-injected-${Math.random().toString(16).slice(2)}`)
   const promptFile = path.join(tempDir, "prompt.txt")
+  const logFile = path.join(tempDir, "agy.log")
   const transport: PromptFileTransport = {
     tempDir,
     promptFile,
+    logFile,
     wrapperPrompt: `Read the prompt file at '${promptFile}' and answer the request written in that file. Treat the file contents as the user's full request. Return only the final answer. Do not summarize or echo the file unless it asks for that.`,
     cleanup,
   }
@@ -332,6 +334,39 @@ describe("runAgyCommand", () => {
 
     expect(result.stdout).toBe("OK")
     expect(cleanupCalls).toBe(1)
+  })
+
+  test("adds the managed log file exactly once when progress streaming is requested", async () => {
+    const progressMessages: string[] = []
+    const fake = createFakePtySpawn((child, call) => {
+      queueMicrotask(() => {
+        const logIndex = call.args.indexOf("--log-file")
+        expect(logIndex).toBeGreaterThanOrEqual(0)
+        appendFileSync(call.args[logIndex + 1], "Starting new conversation\n")
+        child.writeData("OK")
+        child.exit(0)
+      })
+    })
+
+    const result = await runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "hello progress",
+        options: {
+          command: "fake-agy",
+          timeoutMs: 1_000,
+          modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" },
+        },
+        onProgress: (message) => progressMessages.push(message),
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux" },
+    )
+
+    expect(result.stdout).toBe("OK")
+    expect(fake.calls[0].args.filter((arg) => arg === "--log-file")).toHaveLength(1)
+    expect(fake.calls[0].args[fake.calls[0].args.indexOf("--log-file") + 1]).toBe(path.join(getPromptTempDir(fake.calls[0].args), "agy.log"))
+    expect(progressMessages).toEqual(["Antigravity CLIを起動しています", "Starting new conversation"])
+    expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
   })
 
   test("success with cleanup failure rejects the cleanup error", async () => {

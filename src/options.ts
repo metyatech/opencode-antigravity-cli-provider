@@ -14,7 +14,7 @@ export type AgyPromptTransport =
   | { type: "file"; tempDir: string; wrapperPrompt: string }
   | { type: "direct"; prompt: string }
 
-const forbiddenExtraArgs = ["--api-key", "--token", "--auth", "--credential", "--credentials", "--project", "--account", "--login", "--logout", "--model", "--add-dir"]
+const forbiddenExtraArgs = ["--api-key", "--token", "--auth", "--credential", "--credentials", "--project", "--account", "--login", "--logout", "--model", "--add-dir", "--log-file"]
 
 const hasOwn = (record: Record<string, string>, key: string) => Object.prototype.hasOwnProperty.call(record, key)
 
@@ -75,9 +75,10 @@ export const resolveAgyModel = (modelId: string, modelMap: Record<string, string
   throw new AntigravityCliConfigurationError(`Invalid Antigravity CLI model mapping for model "${modelId}". Model mappings must be non-empty strings.`)
 }
 
-export const buildAgyArgs = (extraArgs: string[], agyModel: string, promptTransport: AgyPromptTransport) => {
+export const buildAgyArgs = (extraArgs: string[], agyModel: string, promptTransport: AgyPromptTransport, managedLogPath?: string) => {
   if (promptTransport.type === "file") {
-    return [...extraArgs, "--add-dir", promptTransport.tempDir, "--model", agyModel, "-p", promptTransport.wrapperPrompt]
+    const logArgs = managedLogPath === undefined ? [] : ["--log-file", managedLogPath]
+    return [...extraArgs, ...logArgs, "--add-dir", promptTransport.tempDir, "--model", agyModel, "-p", promptTransport.wrapperPrompt]
   }
 
   return [...extraArgs, "--model", agyModel, "-p", promptTransport.prompt]

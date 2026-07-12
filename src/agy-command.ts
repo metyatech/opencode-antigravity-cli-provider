@@ -11,6 +11,8 @@ import {
 import { releaseAgyPtyProcess, resolveAgyExecutable } from "./model-discovery"
 import { buildAgyArgs, normalizeOptions, resolveAgyModel } from "./options"
 import { createPromptFileTransport } from "./prompt-transport"
+import { createAgyProgressMonitor } from "./agy-progress"
+import { createAgyTerminalOutputParser, getAgyWindowsPtyOptions } from "./agy-terminal-output"
 import type { AgyPtyDisposable, AgyPtyModule, AgyPtyProcess } from "./model-discovery"
 import type { AgyPromptTransport } from "./options"
 import type { AgyCommandInvocation, AgyCommandResult, RunAgyCommandDependencies, RunAgyCommandRequest } from "./types"
@@ -121,7 +123,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
         type: "file",
         tempDir: promptFileTransport.tempDir,
         wrapperPrompt: promptFileTransport.wrapperPrompt,
-      }),
+      }, request.onProgress === undefined ? undefined : promptFileTransport.logFile),
       options,
       agyModel,
     }
@@ -146,6 +148,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
             rows: 30,
             cwd: invocation.options.cwd,
             env,
+            windowsPty: getAgyWindowsPtyOptions(platform),
           })
         } catch (error) {
           reject(new AntigravityCliProviderError(`Antigravity CLI failed to start. ${error instanceof Error ? error.message : String(error)}`, { cause: error }))
@@ -161,6 +164,13 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
         let forceKillSent = false
         const disposables: AgyPtyDisposable[] = []
         let timeout: ReturnType<typeof setTimer> | undefined
+        let terminalOutputParser: ReturnType<typeof createAgyTerminalOutputParser>
+        let terminalWriteChain = Promise.resolve()
+        let terminalOutputError: Error | undefined
+        let progressMonitor: ReturnType<typeof createAgyProgressMonitor> | undefined
+        let progressMonitorError: Error | undefined
+        let exitEvent: { exitCode: number } | undefined
+        let finalizationStarted = false
 
         const clearMainTimeout = () => {
           if (timeout !== undefined) {
@@ -192,6 +202,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           for (const disposable of disposables) {
             disposable.dispose()
           }
+          terminalOutputParser.dispose()
         }
 
         const forceKillChild = () => {
@@ -221,13 +232,11 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
         }
 
         const rejectAfterFinalCleanup = () => {
-          if (settled) {
+          if (settled || finalizationStarted) {
             return
           }
 
-          settled = true
-          cleanup()
-          reject(cancellationError ?? new AntigravityCliProviderError("Antigravity CLI cancellation cleanup completed without a cancellation error."))
+          void finalize(undefined)
         }
 
         const requestCancellation = (error: Error) => {
@@ -256,8 +265,100 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           }, dependencies.cancellationForceCleanupMs ?? 5_000)
         }
 
+        const failTerminalOutput = (error: unknown) => {
+          if (terminalOutputError !== undefined || settled) {
+            return
+          }
+
+          terminalOutputError = error instanceof Error ? error : new Error(String(error))
+          requestCancellation(new AntigravityCliProviderError(terminalOutputError.message, { cause: error }))
+        }
+
+        const failProgressMonitor = (error: Error) => {
+          if (progressMonitorError !== undefined || settled) {
+            return
+          }
+
+          progressMonitorError = new AntigravityCliProviderError("Antigravity CLI progress log monitoring failed.", { cause: error })
+          requestCancellation(progressMonitorError)
+        }
+
+        const finalize = async (exitCode: number | undefined) => {
+          if (settled || finalizationStarted) {
+            return
+          }
+
+          finalizationStarted = true
+          let flushError: Error | undefined
+          let finalOutput = ""
+          try {
+            await terminalWriteChain
+            await progressMonitor?.stop()
+            finalOutput = await terminalOutputParser.finish()
+          } catch (error) {
+            flushError = error instanceof Error ? error : new Error(String(error))
+          }
+
+          settled = true
+          cleanup()
+
+          if (cancellationError !== undefined) {
+            reject(cancellationError)
+            return
+          }
+
+          if (progressMonitorError !== undefined) {
+            reject(progressMonitorError)
+            return
+          }
+
+          if (terminalOutputError !== undefined) {
+            reject(new AntigravityCliProviderError(terminalOutputError.message, { cause: terminalOutputError }))
+            return
+          }
+
+          if (flushError !== undefined) {
+            reject(new AntigravityCliProviderError("Antigravity CLI terminal output processing failed.", { cause: flushError }))
+            return
+          }
+
+          if (exitCode === undefined) {
+            reject(cancellationError ?? new AntigravityCliProviderError("Antigravity CLI cancellation cleanup completed without a cancellation error."))
+            return
+          }
+
+          if (exitCode !== 0) {
+            reject(createExitError(exitCode, sanitizeAgyGenerationPtyOutput(output)))
+            return
+          }
+
+          if (finalOutput.length === 0) {
+            reject(createNoOutputError(sanitizeAgyGenerationPtyOutput(output)))
+            return
+          }
+
+          resolve({ stdout: finalOutput, stderr: "" })
+        }
+
         timeout = setTimer(() => requestCancellation(new AntigravityCliTimeoutError(invocation.options.timeoutMs)), invocation.options.timeoutMs)
         const abort = () => requestCancellation(createAbortError())
+
+        terminalOutputParser = (dependencies.createAgyTerminalOutputParser ?? createAgyTerminalOutputParser)((chunk) => {
+          if (settled) {
+            return
+          }
+
+          request.onStdout?.(chunk)
+        }, platform)
+
+        if (request.onProgress !== undefined) {
+          progressMonitor = (dependencies.createAgyProgressMonitor ?? createAgyProgressMonitor)({
+            logFile: promptFileTransport.logFile,
+            onProgress: request.onProgress,
+            onError: failProgressMonitor,
+          })
+          progressMonitor.start()
+        }
 
         disposables.push(child.onData((text) => {
           if (settled) {
@@ -265,36 +366,21 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           }
 
           output += text
+          terminalWriteChain = terminalWriteChain.then(() => terminalOutputParser.push(text)).catch((error: unknown) => {
+            failTerminalOutput(error)
+          })
           if (isInteractivePrompt(text) || isInteractivePrompt(output)) {
             requestCancellation(createInteractiveSetupError(sanitizeAgyGenerationPtyOutput(text)))
           }
         }))
 
         disposables.push(child.onExit(({ exitCode }) => {
-          if (settled) {
+          if (settled || exitEvent !== undefined) {
             return
           }
 
-          settled = true
-          cleanup()
-          if (cancellationError !== undefined) {
-            reject(cancellationError)
-            return
-          }
-
-          const sanitizedOutput = sanitizeAgyGenerationPtyOutput(output)
-          if (exitCode !== 0) {
-            reject(createExitError(exitCode, sanitizedOutput))
-            return
-          }
-
-          if (sanitizedOutput.length === 0) {
-            reject(createNoOutputError(sanitizedOutput))
-            return
-          }
-
-          request.onStdout?.(sanitizedOutput)
-          resolve({ stdout: sanitizedOutput, stderr: "" })
+          exitEvent = { exitCode }
+          void finalize(exitCode)
         }))
 
         request.abortSignal?.addEventListener("abort", abort, { once: true })

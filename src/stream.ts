@@ -4,6 +4,7 @@ import { APPROXIMATION_WARNINGS, createStopFinishReason, createUnknownUsage } fr
 import type { LanguageModelV3StreamPart, RunAgyCommandDependencies, RunAgyCommandRequest } from "./types"
 
 const textStreamId = "antigravity-cli-text"
+const reasoningStreamId = "antigravity-cli-progress"
 
 export const createAgyTextStream = (request: RunAgyCommandRequest, dependencies: RunAgyCommandDependencies = {}) => {
   let abortController: AbortController | undefined
@@ -15,6 +16,8 @@ export const createAgyTextStream = (request: RunAgyCommandRequest, dependencies:
     start(controller) {
       abortController = new AbortController()
       let textStarted = false
+      let reasoningStarted = false
+      let reasoningEnded = false
       let abortListenerRemoved = false
 
       const abort = () => abortController?.abort()
@@ -33,12 +36,29 @@ export const createAgyTextStream = (request: RunAgyCommandRequest, dependencies:
         {
           ...request,
           abortSignal: abortController.signal,
+          onProgress: (message) => {
+            if (streamCancelled || textStarted) {
+              return
+            }
+
+            if (!reasoningStarted) {
+              reasoningStarted = true
+              controller.enqueue({ type: "reasoning-start", id: reasoningStreamId })
+            }
+
+            controller.enqueue({ type: "reasoning-delta", id: reasoningStreamId, delta: `${message}\n` })
+          },
           onStdout: (chunk) => {
             if (streamCancelled) {
               return
             }
 
             if (!textStarted) {
+              if (reasoningStarted && !reasoningEnded) {
+                reasoningEnded = true
+                controller.enqueue({ type: "reasoning-end", id: reasoningStreamId })
+              }
+
               textStarted = true
               controller.enqueue({ type: "text-start", id: textStreamId })
             }
@@ -57,6 +77,11 @@ export const createAgyTextStream = (request: RunAgyCommandRequest, dependencies:
             return
           }
 
+          if (reasoningStarted && !reasoningEnded) {
+            reasoningEnded = true
+            controller.enqueue({ type: "reasoning-end", id: reasoningStreamId })
+          }
+
           if (textStarted) {
             controller.enqueue({ type: "text-end", id: textStreamId })
           }
@@ -68,6 +93,11 @@ export const createAgyTextStream = (request: RunAgyCommandRequest, dependencies:
           removeAbortListener()
           if (streamCancelled) {
             return
+          }
+
+          if (reasoningStarted && !reasoningEnded) {
+            reasoningEnded = true
+            controller.enqueue({ type: "reasoning-end", id: reasoningStreamId })
           }
 
           controller.error(error)

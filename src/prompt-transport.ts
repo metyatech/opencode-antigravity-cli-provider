@@ -6,6 +6,7 @@ import { PromptCleanupError } from "./errors"
 export type PromptFileTransport = {
   tempDir: string
   promptFile: string
+  logFile: string
   wrapperPrompt: string
   cleanup: () => Promise<void>
 }
@@ -102,8 +103,10 @@ const buildWrapperPrompt = (promptFile: string) =>
 export const createPromptFileTransport = async (prompt: string, cleanupDependencies: PromptCleanupDependencies = {}): Promise<PromptFileTransport> => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-antigravity-prompt-"))
   const promptFile = path.join(tempDir, "prompt.txt")
+  const logFile = path.join(tempDir, "agy.log")
   try {
     await fs.writeFile(promptFile, prompt, "utf8")
+    await fs.writeFile(logFile, "", "utf8")
   } catch (error) {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
     throw error
@@ -135,6 +138,7 @@ export const createPromptFileTransport = async (prompt: string, cleanupDependenc
   return {
     tempDir,
     promptFile,
+    logFile,
     wrapperPrompt: buildWrapperPrompt(promptFile),
     cleanup,
   }

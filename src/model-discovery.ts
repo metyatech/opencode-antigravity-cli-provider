@@ -35,6 +35,10 @@ export type AgyPtySpawnOptions = {
   rows: number
   cwd: string
   env: NodeJS.ProcessEnv
+  windowsPty?: {
+    backend: "conpty"
+    buildNumber?: number
+  }
 }
 
 export type AgyPtyExitEvent = {

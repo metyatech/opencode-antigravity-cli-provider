@@ -45,6 +45,8 @@ export type RunAgyCommandDependencies = {
   platform?: NodeJS.Platform
   cancellationGraceMs?: number
   cancellationForceCleanupMs?: number
+  createAgyTerminalOutputParser?: (onDelta: (delta: string) => void, platform: NodeJS.Platform) => AgyTerminalOutputParser
+  createAgyProgressMonitor?: (options: AgyProgressMonitorFactoryOptions) => AgyProgressMonitor
 }
 
 export type RunAgyCommandRequest = {
@@ -53,6 +55,24 @@ export type RunAgyCommandRequest = {
   options?: AntigravityCliProviderOptions | ResolvedAntigravityCliProviderOptions
   abortSignal?: AbortSignal
   onStdout?: (chunk: string) => void
+  onProgress?: (message: string) => void
+}
+
+export interface AgyTerminalOutputParser {
+  push(data: string): Promise<void>
+  finish(): Promise<string>
+  dispose(): void
+}
+
+export interface AgyProgressMonitor {
+  start(): void
+  stop(): Promise<void>
+}
+
+export type AgyProgressMonitorFactoryOptions = {
+  logFile: string
+  onProgress: (message: string) => void
+  onError: (error: Error) => void
 }
 
 export type LanguageModelV3Prompt = Array<{
@@ -106,6 +126,9 @@ export type LanguageModelV3GenerateResult = {
 
 export type LanguageModelV3StreamPart =
   | { type: "stream-start"; warnings: LanguageModelV3Warning[] }
+  | { type: "reasoning-start"; id: string }
+  | { type: "reasoning-delta"; id: string; delta: string }
+  | { type: "reasoning-end"; id: string }
   | { type: "text-start"; id: string }
   | { type: "text-delta"; id: string; delta: string }
   | { type: "text-end"; id: string }
@@ -136,7 +159,7 @@ export type ProviderV3 = {
 export const APPROXIMATION_WARNINGS: LanguageModelV3Warning[] = [
   {
     type: "other",
-    message: "Antigravity CLI provider is text-only; tool calls, approvals, usage, cache control, and conversation resume are approximate/not supported.",
+    message: "Antigravity CLI progress events are safe lifecycle summaries, not model reasoning text; tool calls, approvals, usage, cache control, and conversation resume are approximate/not supported.",
   },
 ]
 

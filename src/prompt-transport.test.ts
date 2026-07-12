@@ -27,6 +27,7 @@ describe("createPromptFileTransport", () => {
     try {
       expect(transport.tempDir.startsWith(path.join(os.tmpdir(), "opencode-antigravity-prompt-"))).toBe(true)
       expect(transport.promptFile).toBe(path.join(transport.tempDir, "prompt.txt"))
+      expect(transport.logFile).toBe(path.join(transport.tempDir, "agy.log"))
       expect(transport.wrapperPrompt).toContain(transport.promptFile)
       expect(transport.wrapperPrompt).toContain(`Read the prompt file at '${transport.promptFile}'`)
       expect(transport.wrapperPrompt).toContain("answer the request written in that file")
@@ -36,6 +37,7 @@ describe("createPromptFileTransport", () => {
       expect(transport.wrapperPrompt).not.toContain("Read this exact file")
       expect(transport.wrapperPrompt).not.toContain("complete OpenCode conversation/user request")
       await expect(readFile(transport.promptFile, "utf8")).resolves.toBe(renderedPrompt)
+      await expect(readFile(transport.logFile, "utf8")).resolves.toBe("")
     } finally {
       await transport.cleanup()
     }
@@ -60,9 +62,13 @@ describe("createPromptFileTransport", () => {
     const transport = await createPromptFileTransport("hello")
 
     expect(existsSync(transport.tempDir)).toBe(true)
+    expect(existsSync(transport.promptFile)).toBe(true)
+    expect(existsSync(transport.logFile)).toBe(true)
     await transport.cleanup()
 
     expect(existsSync(transport.tempDir)).toBe(false)
+    expect(existsSync(transport.promptFile)).toBe(false)
+    expect(existsSync(transport.logFile)).toBe(false)
   })
 
   test("successful cleanup is idempotent", async () => {
