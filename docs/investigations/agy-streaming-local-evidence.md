@@ -352,3 +352,93 @@ Files:
 Evidence zip:
 
 - `.omo/evidence/agy-streaming-investigation.zip`
+
+## Attempt 2: Direct PTY Capture
+
+### node-pty preparation result
+
+- `bun install --frozen-lockfile` completed with exit `0`.
+- `package.json` SHA256 was unchanged: `25341b1aecccbca6888382f7f8ddc593c97a84000eb827b4d95d3c0a73f5db6f`.
+- `bun.lock` SHA256 was unchanged: `b80af1281058bef633d36fa8b273d2d480d9b7f127cd263cb62c86dd8a584b4b`.
+- `require.resolve("node-pty")` resolved to `D:\ghws\opencode-antigravity-cli-provider-agy-streaming-evidence\node_modules\node-pty\lib\index.js`.
+- `require("node-pty").spawn` type was `function`.
+- Resolved `node-pty` package version: `1.1.0`.
+
+Classification key used for this attempt:
+
+- `A control-only`: PTY setup/control sequence chunk without answer body.
+- `B progress/status-text`: human-readable CLI progress or status text that is not the requested final answer body.
+- `C final-answer-body`: requested answer text or its continuation.
+- `D terminal-newline/control-cleanup`: trailing terminal newline or cleanup-only output.
+- `E insufficient`: no direct PTY answer evidence or errored/blocked capture.
+
+### Quick metrics and classification
+
+- Model slug/display: `gemini-3-5-flash-medium` / `Gemini 3.5 Flash (Medium)`.
+- Run-level classification: `C final-answer-body observed`, with requested answer body in chunk `3` at `6864ms`; the quick final answer body was not split across multiple chunks.
+- Metrics: `durationMs=7898`, `exitCode=0`, `timedOut=false`, `chunkCount=3`, `totalUtf8Bytes=182`, `firstPtyDataAtMs=37`, `lastPtyDataAtMs=6864`, `maxInterChunkGapMs=4824`, `chunksBefore90000Ms=3`, `promptCleanupSucceeded=true`.
+- PTY output before 90s: yes; all 3 chunks arrived before `90000ms`.
+- Final answer incremental or batched at direct PTY layer: batched for the answer body in this run; `AGY_STREAM_QUICK_OK` arrived in one chunk after a separate progress/status chunk.
+- Control-sequence presence in raw PTY: CR=yes, CSI=yes, OSC=yes, screen clear=yes, line erase=no, cursor movement=yes.
+
+Representative quick chunks:
+
+| Slice | Chunk | elapsedMs | Classification | Escaped data |
+| --- | ---: | ---: | --- | --- |
+| first/middle/last | 1 | 37 | `A control-only` | `"\u001b[?9001h\u001b[?1004h"` |
+| first/middle/last | 2 | 4861 | `B progress/status-text` | `"\u001b[?25l\u001b[2J\u001b[m\u001b[HI am viewing the contents of the prompt file to understand the request.\r\n\u001b]0;C:\\Users\\Origin\\AppData\\Local\\agy\\bin\\agy.exe\u0007\u001b[?25h"` |
+| first/middle/last | 3 | 6864 | `C final-answer-body` | `"AGY_STREAM_QUICK_OK\r\n"` |
+
+Relative quick evidence paths:
+
+- `.omo/evidence/agy-streaming-minimal/tools/capture-agy-pty.ts`
+- `.omo/evidence/agy-streaming-minimal/runs/quick/command.json`
+- `.omo/evidence/agy-streaming-minimal/runs/quick/raw-pty.ndjson`
+- `.omo/evidence/agy-streaming-minimal/runs/quick/final-raw-reconstructed.txt`
+- `.omo/evidence/agy-streaming-minimal/runs/quick/final-sanitized-output.txt`
+- `.omo/evidence/agy-streaming-minimal/runs/quick/exit.json`
+
+### Long metrics and classification
+
+- Model slug/display: `gemini-3-1-pro-high` / `Gemini 3.1 Pro (High)`.
+- Run-level classification: `C final-answer-body observed`, with final answer body starting at chunk `3` (`228880ms`) and continuing through chunk `113` (`243107ms`).
+- Metrics: `durationMs=244158`, `exitCode=0`, `timedOut=false`, `chunkCount=113`, `totalUtf8Bytes=14025`, `firstPtyDataAtMs=37`, `lastPtyDataAtMs=243107`, `maxInterChunkGapMs=143707`, `chunksBefore90000Ms=1`, `promptCleanupSucceeded=true`.
+- PTY output before 90s: yes, but only chunk `1` was observed before `90000ms`; it was `A control-only`. The first human-readable status text arrived at chunk `2` (`143744ms`), after 90s.
+- Final answer incremental or batched at direct PTY layer: incremental for the long run; final answer body was split across chunks `3-113`.
+- Control-sequence presence in raw PTY: CR=yes, CSI=yes, OSC=yes, screen clear=yes, line erase=no, cursor movement=yes.
+
+Representative long chunks:
+
+| Slice | Chunk | elapsedMs | Classification | Escaped data |
+| --- | ---: | ---: | --- | --- |
+| first 5 | 1 | 37 | `A control-only` | `"\u001b[?9001h\u001b[?1004h"` |
+| first 5 | 2 | 143744 | `B progress/status-text` | `"\u001b[?25l\u001b[2J\u001b[m\u001b[HI am searching for the source files you referenced so I can read them and provide the analysis. Once the search completes, I will proceed to read the files.\r\n\u001b]0;C:\\Users\\Origin\\AppData\\Local\\agy\\bin\\agy.exe\u0007\u001b[?25h"` |
+| first 5 | 3 | 228880 | `C final-answer-body` | `"【1. PTY出力が現在どのようにして最終的なAI SDKのtext-deltaに到"` |
+| first 5 | 4 | 229080 | `C final-answer-body` | `"達するか】\r\n本プラグインのアーキテクチャにおいて最も注目すべき点は、AI SDKに対"` |
+| first 5 | 5 | 229280 | `C final-answer-body` | `"して「ストリーミング」としてのインターフェース（`stream.ts` における `createAgyTextStream`）を提供しつつも、内部的には出力をリアル"` |
+| middle 5 | 55 | 236296 | `C final-answer-body` | `"リケーションに送信すると、テキストの文字化け、UIの"` |
+| middle 5 | 56 | 236296 | `C final-answer-body` | `"\r\n\u001b[29;119Hの崩れ、予期せぬスクロール動作など、レンダリング機能に対して壊滅"` |
+| middle 5 | 57 | 236497 | `C final-answer-body` | `"的な悪影響を及ぼす非常に「安全でない（unsafe）」状態を引き\r\n\u001b[29;119Hき起こします。"` |
+| middle 5 | 58 | 236497 | `C final-answer-body` | `"\r\n`agy-command.ts` の `sanitizeAgyGenerationPtyOutput` 関数で定"` |
+| middle 5 | 59 | 236697 | `C final-answer-body` | `"義されている正規表現のパターンを見ることで、具体的にどのよ "` |
+| last 5 | 109 | 242506 | `C final-answer-body` | `"ては上書きされる運命にある大量の古いテキストの残骸と、消去コマンド、そしてキャリッジリタ"` |
+| last 5 | 110 | 242706 | `C final-answer-body` | `"ーンが複雑\r\n\u001b[29;119H雑に絡み合ったノイズの塊となっています。\r\n\n**最終的な回答（Final answer）**"` |
+| last 5 | 111 | 242707 | `C final-answer-body` | `"\r\n一方"` |
+| last 5 | 112 | 242908 | `C final-answer-body` | `"で最終的な回答は、LLMによるテキスト生成が完了し、ユーザーが純粋に必要としている意"` |
+| last 5 | 113 | 243107 | `C final-answer-body` | `"味のあるテキストデータそのものです \r\n\u001b[29;120H 。このデータは通常、余計な装飾、動的なカーソル制御、画面消去などのエスケープシーケンスを伴わない、静的でクリーンなテキス\r\n\u001b[29;119Hスト（Markdown形式のコードブロックや文章など）として印字されます。\r\n\nPTY環境の性質上、アプリケーション（この場合は `agy`）から出力されるこれらのプログレス出力と最終回答は、完全に同じ標準出 \r\n\u001b[29;120H 力（…"` |
+
+Relative long evidence paths:
+
+- `.omo/evidence/agy-streaming-minimal/tools/capture-agy-pty.ts`
+- `.omo/evidence/agy-streaming-minimal/runs/long/command.json`
+- `.omo/evidence/agy-streaming-minimal/runs/long/raw-pty.ndjson`
+- `.omo/evidence/agy-streaming-minimal/runs/long/final-raw-reconstructed.txt`
+- `.omo/evidence/agy-streaming-minimal/runs/long/final-sanitized-output.txt`
+- `.omo/evidence/agy-streaming-minimal/runs/long/exit.json`
+
+### Unresolved unknowns
+
+- These direct PTY captures do not establish whether every `agy` model, prompt length, quota state, or terminal state follows the same timing and chunking pattern.
+- The capture records raw PTY byte timing but does not reconstruct the full terminal screen state that a terminal emulator would display after every control sequence.
+- The direct PTY captures do not include an OpenCode reproduction and therefore do not directly measure OpenCode JSON event timing.
+- No line-erase CSI sequence was observed in these two raw PTY runs, although CR, CSI, OSC, screen clear, and cursor movement were observed.
