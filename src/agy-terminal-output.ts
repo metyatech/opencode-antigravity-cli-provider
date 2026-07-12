@@ -126,13 +126,6 @@ export const createAgyTerminalOutputParser = (onDelta: (delta: string) => void, 
         throw new Error("Antigravity CLI terminal output became non-monotonic after streaming started.")
       }
 
-      if (candidate.length < lastNormalAnswer.length) {
-        const suffix = lastNormalAnswer.slice(committedPrefix.length)
-        committedPrefix = lastNormalAnswer
-        if (suffix.length > 0) onDelta(suffix)
-        return lastNormalAnswer
-      }
-
       const suffix = candidate.slice(committedPrefix.length)
       committedPrefix = candidate
       if (suffix.length > 0) {

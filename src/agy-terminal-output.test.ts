@@ -77,6 +77,19 @@ describe("createAgyTerminalOutputParser", () => {
     parser.dispose()
   })
 
+  test("uses the latest shorter mutable tail at normal finish", async () => {
+    const deltas: string[] = []
+    const parser = createAgyTerminalOutputParser((delta) => deltas.push(delta), "linux")
+    await parser.push("確定行\r\n変更前の長い末尾\r\n最後")
+    await parser.push(`${esc}[1A${esc}[1G${esc}[2K短い末尾`)
+
+    const final = await parser.finish()
+
+    expect(final).toBe("確定行\n短い末尾\n最後")
+    expect(deltas.join("")).toBe(final)
+    parser.dispose()
+  })
+
   test("restores wrapped CJK lines, carriage returns, and cursor overwrites without duplication", async () => {
     const deltas: string[] = []
     const parser = createAgyTerminalOutputParser((delta) => deltas.push(delta), "linux")
