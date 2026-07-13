@@ -34,11 +34,21 @@ export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: num
   let lineBuffer = ""
   let ansiCarry = ""
   let currentCandidate: AgyInteractivePromptCandidate | undefined
+  let currentCandidateOrigin: "active" | "completed" | undefined
   let enabled = true
 
   const clearActiveLine = () => {
     lineBuffer = ""
+    if (currentCandidateOrigin === "active") {
+      currentCandidate = undefined
+      currentCandidateOrigin = undefined
+    }
+  }
+
+  const clearScreenState = () => {
+    lineBuffer = ""
     currentCandidate = undefined
+    currentCandidateOrigin = undefined
   }
 
   const evaluateActiveLine = () => {
@@ -47,11 +57,27 @@ export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: num
       return
     }
 
-    currentCandidate = isInteractivePrompt(trimmedLine) ? { line: trimmedLine } : undefined
+    if (isInteractivePrompt(trimmedLine)) {
+      currentCandidate = { line: trimmedLine }
+      currentCandidateOrigin = "active"
+      return
+    }
+
+    currentCandidate = undefined
+    currentCandidateOrigin = undefined
   }
 
   const completeLine = () => {
-    evaluateActiveLine()
+    const trimmedLine = lineBuffer.trim()
+    if (trimmedLine.length > 0) {
+      if (isInteractivePrompt(trimmedLine)) {
+        currentCandidate = { line: trimmedLine }
+        currentCandidateOrigin = "completed"
+      } else {
+        currentCandidate = undefined
+        currentCandidateOrigin = undefined
+      }
+    }
     lineBuffer = ""
   }
 
@@ -95,7 +121,7 @@ export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: num
     }
 
     if (finalByte === "J" && (parameters === "2" || parameters === "3")) {
-      clearActiveLine()
+      clearScreenState()
     }
   }
 
@@ -157,12 +183,14 @@ export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: num
       lineBuffer = ""
       ansiCarry = ""
       currentCandidate = undefined
+      currentCandidateOrigin = undefined
     },
     disable() {
       enabled = false
       lineBuffer = ""
       ansiCarry = ""
       currentCandidate = undefined
+      currentCandidateOrigin = undefined
     },
   }
 }

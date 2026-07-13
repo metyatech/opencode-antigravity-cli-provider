@@ -337,6 +337,92 @@ describe("runAgyCommand", () => {
     expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
   })
 
+  test("does not force-kill after a genuine setup cancellation has already exited on Linux", async () => {
+    const timers = createManualTimers()
+    let releaseFinish: (() => void) | undefined
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => child.writeData("Please login to continue"))
+    })
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "stale Linux force kill",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        createAgyTerminalOutputParser: () => ({
+          push: async () => undefined,
+          finish: () => new Promise<string>((resolve) => {
+            releaseFinish = () => resolve("Please login to continue")
+          }),
+          dispose: () => undefined,
+        }),
+      },
+    )
+
+    await waitForManualTimer(timers, 750)
+    await waitForWrite(fake.calls[0].child)
+    const forceKillTimer = timers.timers.find((timer) => timer.timeoutMs === 1_500)
+    expect(forceKillTimer).toBeDefined()
+    fake.calls[0].child.exit(1)
+    expect(forceKillTimer?.cleared).toBe(true)
+    forceKillTimer?.handler()
+    expect(fake.calls[0].child.killSignals).toEqual([])
+    await waitForCondition(() => releaseFinish !== undefined)
+    releaseFinish?.()
+    await expect(run).rejects.toThrow("Please login to continue")
+    expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
+  })
+
+  test("does not call processKill after a genuine setup cancellation has already exited on Windows", async () => {
+    const timers = createManualTimers()
+    const processKillCalls: number[] = []
+    let releaseFinish: (() => void) | undefined
+    const fake = createFakePtySpawn((child) => {
+      child.pid = 4_242
+      queueMicrotask(() => child.writeData("Please login to continue"))
+    })
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "stale Windows force kill",
+        options: { command: "./fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "win32",
+        processKill: (pid) => processKillCalls.push(pid),
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        createAgyTerminalOutputParser: () => ({
+          push: async () => undefined,
+          finish: () => new Promise<string>((resolve) => {
+            releaseFinish = () => resolve("Please login to continue")
+          }),
+          dispose: () => undefined,
+        }),
+      },
+    )
+
+    await waitForManualTimer(timers, 750)
+    await waitForWrite(fake.calls[0].child)
+    const forceKillTimer = timers.timers.find((timer) => timer.timeoutMs === 1_500)
+    expect(forceKillTimer).toBeDefined()
+    fake.calls[0].child.exit(1)
+    expect(forceKillTimer?.cleared).toBe(true)
+    forceKillTimer?.handler()
+    expect(processKillCalls).toEqual([])
+    expect(fake.calls[0].child.killSignals).toEqual([])
+    await waitForCondition(() => releaseFinish !== undefined)
+    releaseFinish?.()
+    await expect(run).rejects.toThrow("Please login to continue")
+    expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
+  })
+
   test("keeps queued prompt data for exit nonzero setup diagnosis without starting a post-exit timer", async () => {
     const timers = createManualTimers()
     let releasePush: (() => void) | undefined
@@ -507,6 +593,30 @@ describe("runAgyCommand", () => {
     await expectPromisePending(run)
     fake.calls[0].child.exit(1)
     await expect(run).rejects.toThrow(screen.includes("Press Enter") ? "Press Enter to continue" : "Please login to continue")
+    expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
+  })
+
+  test("confirms a prompt preserved after CRLF followed by CSI 2K", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => child.writeData("Please login to continue\r\n\u001b[2K"))
+    })
+    const timers = createManualTimers()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "CRLF followed by line erase",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux", setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    )
+
+    await waitForSpawn(fake.calls)
+    await expectPromisePending(run)
+    await waitForManualTimer(timers, 750)
+    await waitForWrite(fake.calls[0].child)
+    await expectPromisePending(run)
+    fake.calls[0].child.exit(1)
+    await expect(run).rejects.toThrow("Please login to continue")
     expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
   })
 

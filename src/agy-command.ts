@@ -236,7 +236,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
         }
 
         const forceKillChild = () => {
-          if (settled || forceKillSent) {
+          if (settled || processExited || forceKillSent) {
             return
           }
 
@@ -461,6 +461,7 @@ export const runAgyCommand = (request: RunAgyCommandRequest, dependencies: RunAg
           processExited = true
           clearMainTimeout()
           cancelInteractiveSetupConfirmationTimer()
+          clearForceKillTimer()
           exitEvent = { exitCode }
           void finalize(exitCode)
         }))

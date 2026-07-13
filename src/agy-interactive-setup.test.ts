@@ -43,6 +43,40 @@ describe("AgyInteractiveSetupDetector", () => {
     expect(cursorHomeDetector.push(`Please login to continue${esc}[H`)).toEqual({ line: "Please login to continue" })
   })
 
+  test("preserves a completed prompt when CSI K erases the new CRLF line", () => {
+    const esc = "\u001b"
+    const detector = createAgyInteractiveSetupDetector()
+
+    expect(detector.push(`Please login to continue\r\n${esc}[K`)).toEqual({ line: "Please login to continue" })
+
+    const secondDetector = createAgyInteractiveSetupDetector()
+    expect(secondDetector.push(`Please login to continue\r\n${esc}[2K`)).toEqual({ line: "Please login to continue" })
+
+    const blankLineDetector = createAgyInteractiveSetupDetector()
+    expect(blankLineDetector.push(`Please login to continue\r\n\r\n${esc}[K`)).toEqual({ line: "Please login to continue" })
+  })
+
+  test("clears a completed prompt only for screen erase and clears it on the next normal line", () => {
+    const esc = "\u001b"
+    const detector = createAgyInteractiveSetupDetector()
+
+    expect(detector.push(`Please login to continue\r\n${esc}[2J`)).toBeUndefined()
+
+    const thirdScreenDetector = createAgyInteractiveSetupDetector()
+    expect(thirdScreenDetector.push(`Please login to continue\r\n${esc}[3J`)).toBeUndefined()
+
+    const continuationDetector = createAgyInteractiveSetupDetector()
+    expect(continuationDetector.push("Please login to continue\r\nこれは回答です")).toBeUndefined()
+  })
+
+  test("applies bare CR only to the active line", () => {
+    const activeLineDetector = createAgyInteractiveSetupDetector()
+    expect(activeLineDetector.push("Please login to continue\rnormal text")).toBeUndefined()
+
+    const completedLineDetector = createAgyInteractiveSetupDetector()
+    expect(completedLineDetector.push("Please login to continue\r\n\r")).toEqual({ line: "Please login to continue" })
+  })
+
   test("handles an erase sequence split across chunks without retaining the erased prompt", () => {
     const detector = createAgyInteractiveSetupDetector()
 
