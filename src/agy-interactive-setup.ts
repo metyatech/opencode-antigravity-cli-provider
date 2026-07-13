@@ -133,6 +133,21 @@ export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: num
     return Number.isFinite(parsedRow) && parsedRow > 0 ? parsedRow - 1 : 0
   }
 
+  const parseCursorDistance = (parameters: string) => {
+    const [rawDistance = ""] = parameters.split(";")
+    const parsedDistance = Number.parseInt(rawDistance, 10)
+    return Number.isFinite(parsedDistance) && parsedDistance > 0 ? parsedDistance : 1
+  }
+
+  const moveCursorToRow = (targetRow: number) => {
+    const normalizedTargetRow = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, targetRow))
+    if (currentCandidateOrigin === "active" && currentCandidateRow !== normalizedTargetRow) {
+      currentCandidateOrigin = "completed"
+    }
+    cursorRow = normalizedTargetRow
+    lineBuffer = ""
+  }
+
   const processCsi = (sequence: string) => {
     const finalByte = sequence.at(-1)
     const parameters = sequence.slice(2, -1)
@@ -147,12 +162,17 @@ export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: num
     }
 
     if (finalByte === "H" || finalByte === "f") {
-      const targetRow = parseCursorRow(parameters)
-      if (currentCandidateOrigin === "active" && currentCandidateRow !== targetRow) {
-        currentCandidateOrigin = "completed"
-      }
-      cursorRow = targetRow
-      lineBuffer = ""
+      moveCursorToRow(parseCursorRow(parameters))
+      return
+    }
+
+    if (finalByte === "A") {
+      moveCursorToRow(cursorRow - parseCursorDistance(parameters))
+      return
+    }
+
+    if (finalByte === "B") {
+      moveCursorToRow(cursorRow + parseCursorDistance(parameters))
     }
   }
 

@@ -687,6 +687,73 @@ describe("runAgyCommand", () => {
     expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
   })
 
+  test("does not confirm a prompt erased after relative cursor movement before normal output", async () => {
+    const timers = createManualTimers()
+    const processKillCalls: number[] = []
+    let parserOutput = ""
+    let firstPushProcessed = false
+    const fake = createFakePtySpawn()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "relative cursor erase normal answer",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      {
+        ptySpawn: fake.ptySpawn,
+        platform: "linux",
+        processKill: (pid) => processKillCalls.push(pid),
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        createAgyTerminalOutputParser: () => ({
+          push: async (chunk) => {
+            firstPushProcessed = true
+            if (chunk.includes("通常回答です")) {
+              parserOutput = "通常回答です\nEND_OF_RELATIVE_CURSOR_TEST"
+            }
+          },
+          finish: async () => parserOutput,
+          dispose: () => undefined,
+        }),
+      },
+    )
+
+    await waitForSpawn(fake.calls)
+    fake.calls[0].child.writeData("Please login to continue\r\n\u001b[1A\u001b[1G\u001b[2K")
+    await waitForCondition(() => firstPushProcessed)
+    expect(timers.timers.some((timer) => timer.timeoutMs === 750 && !timer.cleared)).toBe(false)
+    fake.calls[0].child.writeData("通常回答です\r\nEND_OF_RELATIVE_CURSOR_TEST")
+    fake.calls[0].child.exit(0)
+
+    await expect(run).resolves.toEqual({ stdout: "通常回答です\nEND_OF_RELATIVE_CURSOR_TEST", stderr: "" })
+    expect(fake.calls[0].child.writeCalls).toEqual([])
+    expect(fake.calls[0].child.killSignals).toEqual([])
+    expect(processKillCalls).toEqual([])
+    expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
+  })
+
+  test("confirms a prompt when relative cursor movement erases a different row", async () => {
+    const fake = createFakePtySpawn((child) => {
+      queueMicrotask(() => child.writeData("Welcome\r\nPlease login to continue\r\n\u001b[2A\u001b[2K"))
+    })
+    const timers = createManualTimers()
+    const run = runAgyCommand(
+      {
+        modelId: "gemini-3-5-flash-medium",
+        prompt: "relative cursor erase different row",
+        options: { command: "fake-agy", timeoutMs: 1_000, modelMap: { "gemini-3-5-flash-medium": "Gemini 3.5 Flash (Medium)" } },
+      },
+      { ptySpawn: fake.ptySpawn, platform: "linux", setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+    )
+
+    await waitForManualTimer(timers, 750)
+    await waitForWrite(fake.calls[0].child)
+    await expectPromisePending(run)
+    fake.calls[0].child.exit(1)
+    await expect(run).rejects.toThrow("Please login to continue")
+    expect(existsSync(getPromptTempDir(fake.calls[0].args))).toBe(false)
+  })
+
   test("discards a prompt candidate when a later chunk continues the answer", async () => {
     const fake = createFakePtySpawn((child) => {
       queueMicrotask(() => {

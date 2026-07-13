@@ -85,6 +85,44 @@ describe("AgyInteractiveSetupDetector", () => {
     expect(rowTwoDetector.push("K")).toBeUndefined()
   })
 
+  test("uses relative cursor movement to erase only the candidate row", () => {
+    const esc = "\u001b"
+
+    expect(createAgyInteractiveSetupDetector().push(`Please login to continue\r\n${esc}[1A${esc}[2K`)).toBeUndefined()
+    expect(createAgyInteractiveSetupDetector().push(`Welcome\r\nPlease login to continue\r\n${esc}[2A${esc}[2K`)).toEqual({ line: "Please login to continue" })
+    expect(createAgyInteractiveSetupDetector().push(`Welcome\r\nPlease login to continue\r\n${esc}[1A${esc}[2K`)).toBeUndefined()
+    expect(createAgyInteractiveSetupDetector().push(`Please login to continue\r\n${esc}[999A${esc}[2K`)).toBeUndefined()
+    expect(createAgyInteractiveSetupDetector().push(`Please login to continue\r\n${esc}[H${esc}[1B${esc}[2K`)).toEqual({ line: "Please login to continue" })
+    expect(createAgyInteractiveSetupDetector().push(`Welcome\r\nPlease login to continue\r\n${esc}[H${esc}[1B${esc}[2K`)).toBeUndefined()
+  })
+
+  test("defaults relative cursor distance to one and handles split movement CSI", () => {
+    const esc = "\u001b"
+    for (const up of [`${esc}[A`, `${esc}[0A`, `${esc}[;A`]) {
+      expect(createAgyInteractiveSetupDetector().push(`Please login to continue\r\n${up}${esc}[2K`)).toBeUndefined()
+    }
+    for (const down of [`${esc}[B`, `${esc}[0B`, `${esc}[;B`]) {
+      expect(createAgyInteractiveSetupDetector().push(`Please login to continue\r\n${esc}[H${down}${esc}[2K`)).toEqual({ line: "Please login to continue" })
+    }
+
+    const upDetector = createAgyInteractiveSetupDetector()
+    expect(upDetector.push(`Please login to continue\r\n${esc}[`)).toEqual({ line: "Please login to continue" })
+    expect(upDetector.push(`1A${esc}[2`)).toEqual({ line: "Please login to continue" })
+    expect(upDetector.push("K")).toBeUndefined()
+
+    const downDetector = createAgyInteractiveSetupDetector()
+    expect(downDetector.push(`Welcome\r\nPlease login to continue\r\n${esc}[H${esc}[`)).toEqual({ line: "Please login to continue" })
+    expect(downDetector.push(`1B${esc}[2`)).toEqual({ line: "Please login to continue" })
+    expect(downDetector.push("K")).toBeUndefined()
+  })
+
+  test("ignores CSI G while preserving relative cursor row tracking", () => {
+    const esc = "\u001b"
+
+    expect(createAgyInteractiveSetupDetector().push(`Welcome\r\nPlease login to continue\r\n${esc}[2A${esc}[1G${esc}[2K`)).toEqual({ line: "Please login to continue" })
+    expect(createAgyInteractiveSetupDetector().push(`Please login to continue\r\nopen${esc}[1A${esc}[1G${esc}[2Knormal text`)).toBeUndefined()
+  })
+
   test("clears a completed prompt only for screen erase and clears it on the next normal line", () => {
     const esc = "\u001b"
     const detector = createAgyInteractiveSetupDetector()
