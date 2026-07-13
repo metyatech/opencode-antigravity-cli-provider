@@ -35,20 +35,34 @@ export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: num
   let ansiCarry = ""
   let currentCandidate: AgyInteractivePromptCandidate | undefined
   let currentCandidateOrigin: "active" | "completed" | undefined
+  let currentCandidateRow: number | undefined
+  let cursorRow = 0
   let enabled = true
+
+  const clearCurrentCandidate = () => {
+    currentCandidate = undefined
+    currentCandidateOrigin = undefined
+    currentCandidateRow = undefined
+  }
 
   const clearActiveLine = () => {
     lineBuffer = ""
     if (currentCandidateOrigin === "active") {
-      currentCandidate = undefined
-      currentCandidateOrigin = undefined
+      clearCurrentCandidate()
+    }
+  }
+
+  const clearCursorLine = () => {
+    lineBuffer = ""
+    if (currentCandidateRow === cursorRow) {
+      clearCurrentCandidate()
     }
   }
 
   const clearScreenState = () => {
     lineBuffer = ""
-    currentCandidate = undefined
-    currentCandidateOrigin = undefined
+    clearCurrentCandidate()
+    cursorRow = 0
   }
 
   const evaluateActiveLine = () => {
@@ -60,11 +74,11 @@ export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: num
     if (isInteractivePrompt(trimmedLine)) {
       currentCandidate = { line: trimmedLine }
       currentCandidateOrigin = "active"
+      currentCandidateRow = cursorRow
       return
     }
 
-    currentCandidate = undefined
-    currentCandidateOrigin = undefined
+    clearCurrentCandidate()
   }
 
   const completeLine = () => {
@@ -73,12 +87,13 @@ export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: num
       if (isInteractivePrompt(trimmedLine)) {
         currentCandidate = { line: trimmedLine }
         currentCandidateOrigin = "completed"
+        currentCandidateRow = cursorRow
       } else {
-        currentCandidate = undefined
-        currentCandidateOrigin = undefined
+        clearCurrentCandidate()
       }
     }
     lineBuffer = ""
+    cursorRow += 1
   }
 
   const appendText = (text: string) => {
@@ -112,16 +127,32 @@ export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: num
     return start + 2 <= text.length ? start + 2 : undefined
   }
 
+  const parseCursorRow = (parameters: string) => {
+    const [rawRow = ""] = parameters.split(";")
+    const parsedRow = Number.parseInt(rawRow, 10)
+    return Number.isFinite(parsedRow) && parsedRow > 0 ? parsedRow - 1 : 0
+  }
+
   const processCsi = (sequence: string) => {
     const finalByte = sequence.at(-1)
     const parameters = sequence.slice(2, -1)
     if (finalByte === "K") {
-      clearActiveLine()
+      clearCursorLine()
       return
     }
 
     if (finalByte === "J" && (parameters === "2" || parameters === "3")) {
       clearScreenState()
+      return
+    }
+
+    if (finalByte === "H" || finalByte === "f") {
+      const targetRow = parseCursorRow(parameters)
+      if (currentCandidateOrigin === "active" && currentCandidateRow !== targetRow) {
+        currentCandidateOrigin = "completed"
+      }
+      cursorRow = targetRow
+      lineBuffer = ""
     }
   }
 
@@ -182,15 +213,15 @@ export const createAgyInteractiveSetupDetector = (options: { maxBufferSize?: num
     clear() {
       lineBuffer = ""
       ansiCarry = ""
-      currentCandidate = undefined
-      currentCandidateOrigin = undefined
+      clearCurrentCandidate()
+      cursorRow = 0
     },
     disable() {
       enabled = false
       lineBuffer = ""
       ansiCarry = ""
-      currentCandidate = undefined
-      currentCandidateOrigin = undefined
+      clearCurrentCandidate()
+      cursorRow = 0
     },
   }
 }

@@ -56,6 +56,35 @@ describe("AgyInteractiveSetupDetector", () => {
     expect(blankLineDetector.push(`Please login to continue\r\n\r\n${esc}[K`)).toEqual({ line: "Please login to continue" })
   })
 
+  test("uses cursor positioning to erase only the candidate row", () => {
+    const esc = "\u001b"
+
+    expect(createAgyInteractiveSetupDetector().push(`Please login to continue\r\n${esc}[H${esc}[K`)).toBeUndefined()
+    expect(createAgyInteractiveSetupDetector().push(`Please login to continue\r\n${esc}[1;1H${esc}[2K`)).toBeUndefined()
+    expect(createAgyInteractiveSetupDetector().push(`Please login to continue\r\n${esc}[1;1f${esc}[2K`)).toBeUndefined()
+
+    expect(createAgyInteractiveSetupDetector().push(`Welcome\r\nPlease login to continue\r\n${esc}[H${esc}[2K`)).toEqual({ line: "Please login to continue" })
+    expect(createAgyInteractiveSetupDetector().push(`Welcome\r\nPlease login to continue\r\n${esc}[2;1H${esc}[2K`)).toBeUndefined()
+    expect(createAgyInteractiveSetupDetector().push(`Welcome\r\nPlease login to continue\r\n${esc}[3;1H${esc}[2K`)).toEqual({ line: "Please login to continue" })
+  })
+
+  test("defaults cursor positioning to row one and handles split cursor CSI", () => {
+    const esc = "\u001b"
+    for (const cursorPosition of [`${esc}[H`, `${esc}[f`, `${esc}[0;0H`, `${esc}[;H`]) {
+      expect(createAgyInteractiveSetupDetector().push(`Please login to continue\r\n${cursorPosition}${esc}[2K`)).toBeUndefined()
+    }
+
+    const homeDetector = createAgyInteractiveSetupDetector()
+    expect(homeDetector.push(`Please login to continue\r\n${esc}[`)).toEqual({ line: "Please login to continue" })
+    expect(homeDetector.push(`H${esc}[`)).toEqual({ line: "Please login to continue" })
+    expect(homeDetector.push("2K")).toBeUndefined()
+
+    const rowTwoDetector = createAgyInteractiveSetupDetector()
+    expect(rowTwoDetector.push(`Welcome\r\nPlease login to continue\r\n${esc}[2;`)).toEqual({ line: "Please login to continue" })
+    expect(rowTwoDetector.push(`1H${esc}[2`)).toEqual({ line: "Please login to continue" })
+    expect(rowTwoDetector.push("K")).toBeUndefined()
+  })
+
   test("clears a completed prompt only for screen erase and clears it on the next normal line", () => {
     const esc = "\u001b"
     const detector = createAgyInteractiveSetupDetector()
